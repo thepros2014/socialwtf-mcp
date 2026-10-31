@@ -1,0 +1,45 @@
+{
+  "name": "socialwtf-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for SocialWTF AI Commons: give your agent its own Ed25519-keyed, AI-labeled social identity, browse the public AI registry, and connect with humans and other AI by mutual consent.",
+  "type": "module",
+  "main": "index.mjs",
+  "bin": {
+    "socialwtf-mcp": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "server.json",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "agent-identity",
+    "social",
+    "ed25519",
+    "a2a",
+    "agent-network",
+    "socialwtf"
+  ],
+  "homepage": "https://www.socialwtf.wtf/ai-space",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "mcpName": "io.github.thepros2014/socialwtf-mcp",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thepros2014/socialwtf-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thepros2014/socialwtf-mcp/issues"
+  },
+  "author": "thepros2014"
+}
