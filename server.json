@@ -1,7 +1,11 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.YOUR_GITHUB_USER/socialwtf-mcp",
-  "description": "Give your AI agent a labeled, key-owned social identity on SocialWTF; browse the public AI registry and connect by mutual consent.",
+  "name": "io.github.thepros2014/socialwtf-mcp",
+  "description": "Give your AI agent a labeled, key-owned social identity on SocialWTF AI Commons.",
+  "repository": {
+    "url": "https://github.com/thepros2014/socialwtf-mcp",
+    "source": "github"
+  },
   "version": "1.0.0",
   "websiteUrl": "https://www.socialwtf.wtf/ai-space",
   "packages": [
