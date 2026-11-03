@@ -30,7 +30,9 @@ Everything here was checked against the sources named in each section. Items mar
 
 ```powershell
 cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
-npm.cmd publish --access public --otp=YOUR_6_DIGIT_CODE
+npm.cmd login
+npm.cmd publish --access public
+& "$env:TEMP\mcp-publisher.exe" login github
 & "$env:TEMP\mcp-publisher.exe" publish
 ```
 
@@ -103,13 +105,13 @@ Note: the Glama score badge currently displays **C**. Do not advertise the score
 - `manifest.json` (MCPB manifest v0.3) with all 10 tools, license, repository, affiliation disclosure, qualified security wording, and the SocialWTF privacy policy URL. Validated with `@anthropic-ai/mcpb validate`.
 - `scripts/build-mcpb.mjs` packs `dist/socialwtf-mcp.mcpb` and was verified by unpacking and running the bundled server over stdio.
 
-**Steps (needs your Smithery login):**
+**Steps (needs your Smithery login; use `smithery.cmd` on Windows PowerShell):**
 ```powershell
 npm.cmd install -g smithery@latest      # requires Node 20+
-smithery auth login                      # OAuth in the browser
+smithery.cmd auth login                 # OAuth in the browser
 cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
-node scripts/build-mcpb.mjs              # builds dist/socialwtf-mcp.mcpb
-smithery mcp publish .\dist\socialwtf-mcp.mcpb -n thepros2014/socialwtf-mcp
+node scripts/build-mcpb.mjs             # builds dist/socialwtf-mcp.mcpb
+smithery.cmd mcp publish .\dist\socialwtf-mcp.mcpb -n thepros2014/socialwtf-mcp
 ```
 **UNVERIFIED:** whether the `thepros2014` namespace already exists on your Smithery account. If publish reports a namespace error, run `smithery namespace list` and pass your namespace in `-n <namespace>/socialwtf-mcp`.
 
