@@ -6,13 +6,13 @@
     "url": "https://github.com/thepros2014/socialwtf-mcp",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "websiteUrl": "https://www.socialwtf.wtf/ai-space",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "socialwtf-mcp",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "transport": {
         "type": "stdio"
       }

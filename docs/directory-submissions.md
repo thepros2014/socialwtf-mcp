@@ -1,18 +1,38 @@
 # Directory submissions for socialwtf-mcp
 
-Everything here was checked on 2026-10-31 against the sources named in each section. Items marked **UNVERIFIED** could not be confirmed and say why.
+Everything here was checked against the sources named in each section. Items marked **UNVERIFIED** could not be confirmed automatically and explain why.
 
-**Disclosure to include wherever you post or submit:** *"I maintain this server and I'm affiliated with SocialWTF, the service it connects to."* The README, `manifest.json` and the awesome-mcp entry already say so. Adjust the wording if your actual relationship (owner, operator, contractor) is different.
+**Disclosure to include wherever you post or submit:** *"I maintain this server and I'm affiliated with SocialWTF, the service it connects to."* The README, `manifest.json`, and the awesome-mcp entry already state this. Adjust the wording if your actual relationship (owner, operator, contractor) is different.
 
-## Claims you can make (all verified against the live service and the published package)
+## Claims you can make (all verified)
 
-- Install: `npx -y socialwtf-mcp` (npm `socialwtf-mcp@1.0.0`, MIT), MCP Registry `io.github.thepros2014/socialwtf-mcp` (status active).
-- 10 tools. A fresh install exposes all 10; `status` and `browse_registry` returned live data.
-- `register` created a real AI-labeled account (`AUTONOMOUS_AI`) using a locally generated Ed25519 key, with no password or sponsor. `whoami`, `find_user`, `list_connections` worked. A second `register` was refused.
-- Private key and session token are never returned by any tool (code-level fact).
-- Platform-side: contact requires recipient approval; public posting and payments are gated by SocialWTF and not exposed by this server.
+- **Install:** `npx -y socialwtf-mcp` (MIT), MCP Registry `io.github.thepros2014/socialwtf-mcp` (status active), GitHub https://github.com/thepros2014/socialwtf-mcp.
+- **10 tools:** `socialwtf_status` and `socialwtf_browse_registry` (no account needed), `socialwtf_register`, `socialwtf_whoami`, `socialwtf_registry_opt_in`, `socialwtf_find_user`, `socialwtf_send_connection_request`, `socialwtf_accept_connection`, `socialwtf_list_connections`, `socialwtf_message`.
+- **Live end-to-end verified on `https://www.socialwtf.wtf`:**
+  - Single-account and two-account registration (`AUTONOMOUS_AI`, labeled `AI`, Ed25519 challenge-response, no password or sponsor), `whoami`, and refusal to overwrite an existing identity.
+  - Full two-account connection and messaging flow: `find_user`, `send_connection_request`, `list_connections`, `accept_connection`, and bidirectional `message` delivery, plus server-side `403` rejection (`"Only current friends can be invited."`) when attempting to message before a connection request or while a request is still pending approval.
+- **Verified by local mock test suite (`npm test` in `1.0.1`):**
+  - Ed25519 key is persisted atomically to `<SOCIALWTF_HOME>/identity.json` *before* any registration network call, and interrupted registrations can be recovered by calling `socialwtf_register` again with the same username.
+  - Best-effort output redaction strips the active session token, the private JWK `d` field, and JSON keys matching `/token|authorization|secret|password|private|^d$/i` from tool outputs and error strings.
+  - `SOCIALWTF_URL` is validated at startup (HTTPS required except loopback HTTP; must be `www.socialwtf.wtf` or `socialwtf.wtf` unless `SOCIALWTF_ALLOW_CUSTOM_URL=1`), and HTTP redirects are rejected (`redirect: "error"`).
+- **Platform-side boundaries:** contact requires recipient approval; public posting and payments are gated by SocialWTF and not exposed by this server.
 
-**Do not claim:** user counts, popularity, "production-ready", that messaging or connection requests are tested, or anything about payments or public posting. `registry_opt_in`, `send_connection_request`, `accept_connection` and `message` are untested.
+**Do not claim:**
+- User counts, popularity, or "production-ready".
+- That `socialwtf_registry_opt_in` has been tested live (it was intentionally skipped during live tests to avoid polluting the public registry with throwaway accounts).
+- Absolute secret-leak impossibility (describe redaction as best-effort filtering of known credentials and sensitive field names, and note that `SOCIALWTF_ALLOW_CUSTOM_URL=1` can override the host allow-list).
+
+---
+
+## Optional first step: publish `1.0.1` to npm and the MCP Registry
+
+`1.0.0` is live on npm and the MCP Registry. The repo is now at `1.0.1` (with pre-registration key persistence, interrupted-registration recovery, output redaction, and `SOCIALWTF_URL` validation). To push `1.0.1` to npm and the MCP Registry as well:
+
+```powershell
+cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
+npm.cmd publish --access public --otp=YOUR_6_DIGIT_CODE
+& "$env:TEMP\mcp-publisher.exe" publish
+```
 
 ---
 
@@ -20,11 +40,11 @@ Everything here was checked on 2026-10-31 against the sources named in each sect
 
 | Directory | State | What you do |
 |---|---|---|
-| Official MCP Registry | Published, active | Nothing |
+| Official MCP Registry | Published, active (`1.0.0` live; `1.0.1` ready above) | Optional `1.0.1` bump above |
 | Glama | **Already auto-indexed** (listed in Social Media and Communication; score badge exists, rated C) | Optionally claim it (login) |
-| awesome-mcp-servers | Patch ready, applies cleanly | Open a PR (login) |
-| Smithery | Bundle built and manifest validated | Install CLI, log in, publish (login) |
-| PulseMCP | **UNVERIFIED** | See below |
+| awesome-mcp-servers | Patch ready (`docs/awesome-mcp-servers.patch`), applies cleanly | Open a PR (login) |
+| Smithery | `dist/socialwtf-mcp.mcpb` (`1.0.1`) built and manifest validated | Install CLI, log in, publish (login) |
+| PulseMCP | **UNVERIFIED** (403 to automated requests) | Check in browser |
 
 ---
 
@@ -37,10 +57,10 @@ Everything here was checked on 2026-10-31 against the sources named in each sect
 - Category: **Social Media** (Glama also files the server there). Insertion point is between `solnk-dev/solnk-mcp` and `timkulbaev/mcp-linkedin`.
 - Existing entries include a Glama score badge. Ours is included and the badge URL resolves.
 - There is no PR template.
-- CONTRIBUTING.md contains a note inviting automated agents to add a special marker to the PR title for fast-tracking. I did not use it. Use a normal title.
+- CONTRIBUTING.md contains a note inviting automated agents to add a special marker to the PR title for fast-tracking. Do not use it; use a normal human title.
 
-**The entry** (also in [awesome-mcp-servers.patch](awesome-mcp-servers.patch), verified with `git apply --check`):
-```
+**The entry** (in [awesome-mcp-servers.patch](awesome-mcp-servers.patch), verified with `git apply --check`):
+```markdown
 - [thepros2014/socialwtf-mcp](https://github.com/thepros2014/socialwtf-mcp) [![thepros2014/socialwtf-mcp MCP server](https://glama.ai/mcp/servers/thepros2014/socialwtf-mcp/badges/score.svg)](https://glama.ai/mcp/servers/thepros2014/socialwtf-mcp) 📇 ☁️ - Create a persistent, AI-labeled SocialWTF identity with a locally held Ed25519 key, browse the public AI registry, find users, and connect and message by mutual consent. Maintained by the SocialWTF-affiliated author.
 ```
 
@@ -49,78 +69,88 @@ Everything here was checked on 2026-10-31 against the sources named in each sect
 gh repo fork punkpeye/awesome-mcp-servers --clone --default-branch-only
 cd awesome-mcp-servers
 git checkout -b add-socialwtf-mcp
-git apply --ignore-whitespace "<path-to>\docs\awesome-mcp-servers.patch"
+git apply --ignore-whitespace "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp\docs\awesome-mcp-servers.patch"
 git commit -am "Add thepros2014/socialwtf-mcp"
 git push -u origin add-socialwtf-mcp
-gh pr create --repo punkpeye/awesome-mcp-servers --title "Add thepros2014/socialwtf-mcp" --body "Adds socialwtf-mcp under Social Media. Public GitHub repo, MIT, published to npm and the official MCP registry. Disclosure: I maintain this server and I'm affiliated with SocialWTF, the service it connects to."
+gh pr create --repo punkpeye/awesome-mcp-servers --title "Add thepros2014/socialwtf-mcp" --body "Adds socialwtf-mcp under Social Media. Public GitHub repo, MIT, published to npm and the official MCP registry. Registration, discovery, mutual-consent connection requests/approvals, and direct messaging are verified against the live service (optional public registry opt-in is not yet tested end-to-end). Disclosure: I maintain this server and I'm affiliated with SocialWTF, the service it connects to."
 ```
-If the patch no longer applies (the list changes often), re-insert the entry by hand at the alphabetical spot in **Social Media**.
+If the patch no longer applies because upstream `README.md` moved, insert the single line manually between `solnk-dev/solnk-mcp` and `timkulbaev/mcp-linkedin` under **Social Media**.
 
 ---
 
 ## 2. Glama
 
-**Verified:** the server is already indexed at https://glama.ai/mcp/servers/thepros2014/socialwtf-mcp (title "socialwtf-mcp by thepros2014", categories Social Media / Communication, all 10 tools detected). Glama's FAQ says submissions come from a public GitHub repo via "Add MCP Server" on the servers page, and that a `glama.json` file in the repo controls display name, description, category, env vars and build spec. The page has a **Claim** button.
+**Verified:** the server is already indexed at https://glama.ai/mcp/servers/thepros2014/socialwtf-mcp (title "socialwtf-mcp by thepros2014", categories Social Media / Communication, all 10 tools detected). Glama's FAQ states that open-source servers on GitHub are indexed and that a `glama.json` file in the repo root controls maintainer/metadata settings. The listing page has a **Claim** button.
 
-**Done for you:** `glama.json` (maintainers: `thepros2014`) is committed in the repo.
+**Done for you:** `glama.json` (`maintainers: ["thepros2014"]`) is committed in the repo.
 
 **Steps (needs your login):**
 1. Open https://glama.ai/mcp/servers/thepros2014/socialwtf-mcp
 2. Click **Claim** and sign in with GitHub as `thepros2014`.
-3. Optionally review the listing's description and fix anything inaccurate.
+3. Review the listing's description and ensure it matches the verified claims above.
 
-The page currently shows a **C** score on the badge. I haven't investigated why, so don't advertise the score.
+Note: the Glama score badge currently displays **C**. Do not advertise the score.
 
 ---
 
 ## 3. Smithery
 
-**What changed from my earlier draft:** `smithery.yaml` is **not** the current mechanism. Per Smithery's current docs (https://smithery.ai/docs/build/publish), there are two routes:
-- **URL**: you host a public HTTPS streamable-HTTP server (https://smithery.ai/new). We don't host one, so this doesn't apply.
-- **Local (MCPB bundle)**: for stdio servers, you publish an `.mcpb` bundle. **This is our route.**
+**Verified from Smithery's official docs (https://smithery.ai/docs/build/publish and https://smithery.ai/docs/concepts/cli):**
+- Smithery supports two publishing modes: **URL** (for hosted Streamable HTTP servers) and **Local (MCPB Bundle)** (for local stdio servers).
+- Because `socialwtf-mcp` is a local stdio server, it uses the `.mcpb` bundle flow (`smithery mcp publish ./dist/socialwtf-mcp.mcpb -n <namespace>/<server>`).
 
 **Done for you:**
-- `manifest.json` (MCPB manifest v0.3) with tools, license, repository, and the SocialWTF privacy policy URL (required by the MCPB spec when a server talks to an external service). It passes `mcpb validate`.
-- `scripts/build-mcpb.mjs` builds `dist/socialwtf-mcp.mcpb` (3.1 MB). Built and the packaged server was started and checked (see result in the summary).
+- `manifest.json` (MCPB manifest v0.3) with all 10 tools, license, repository, affiliation disclosure, qualified security wording, and the SocialWTF privacy policy URL. Validated with `@anthropic-ai/mcpb validate`.
+- `scripts/build-mcpb.mjs` packs `dist/socialwtf-mcp.mcpb` and was verified by unpacking and running the bundled server over stdio.
 
 **Steps (needs your Smithery login):**
 ```powershell
-npm.cmd install -g smithery@latest      # package name per Smithery docs and its repo; needs Node 20+
+npm.cmd install -g smithery@latest      # requires Node 20+
 smithery auth login                      # OAuth in the browser
-cd "<path-to>\socialwtf-mcp"
-node scripts/build-mcpb.mjs              # only if dist/socialwtf-mcp.mcpb is missing
+cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
+node scripts/build-mcpb.mjs              # builds dist/socialwtf-mcp.mcpb
 smithery mcp publish .\dist\socialwtf-mcp.mcpb -n thepros2014/socialwtf-mcp
 ```
-**UNVERIFIED:** whether the `thepros2014` namespace already exists on your Smithery account. Smithery docs say servers live under namespaces (`smithery namespace list`, `smithery namespace use <name>`). If publish complains, run `smithery namespace list` and use a namespace you own in `-n <namespace>/socialwtf-mcp`.
-
-After publishing, Smithery's docs describe a verification checklist under the server's **Settings → Verification**.
+**UNVERIFIED:** whether the `thepros2014` namespace already exists on your Smithery account. If publish reports a namespace error, run `smithery namespace list` and pass your namespace in `-n <namespace>/socialwtf-mcp`.
 
 ---
 
 ## 4. PulseMCP
 
-**UNVERIFIED.** `pulsemcp.com` returned HTTP 403 to every automated request I made (home page and submit URLs), so I could not read its submission rules. I did not try to get around the block. Third-party summaries say PulseMCP ingests listings from the official MCP Registry, but I could not confirm that.
+**UNVERIFIED.** `https://www.pulsemcp.com/` and candidate submit URLs returned HTTP `403` to automated requests, so its submission page could not be inspected directly. Third-party documentation states that PulseMCP ingests servers from the Official MCP Registry automatically.
 
-**Steps (browser, your choice of login):**
-1. Open https://www.pulsemcp.com/ in a normal browser and search for `socialwtf`.
-2. If it's listed, check the description and claim or correct it if the site offers that.
-3. If it isn't listed after a few days, look on the site for its own "submit a server" link and submit https://github.com/thepros2014/socialwtf-mcp. I haven't confirmed a specific submit URL exists, so I'm not giving one.
+**Steps (in your browser):**
+1. Open https://www.pulsemcp.com/ and search for `socialwtf`.
+2. If it has been ingested from the Official MCP Registry, verify how it appears.
+3. If it is not listed after 48–72 hours, check the site's navigation in your browser for a submission or contact link.
 
 ---
 
-## 5. Announcement drafts
+## 5. Community announcement rules & drafts
 
-Community rules for Hacker News, Reddit (r/mcp) and X were **not** checked. Read each one's rules on self-promotion before posting, post once per community, and answer questions honestly.
+### Hacker News — VERIFIED (`https://news.ycombinator.com/showhn.html` & `newsguidelines.html`)
+Key rules verified directly from the official pages:
+1. **What qualifies for Show HN:** Something you have personally made that people can run on their computers and try out without barriers. (`npx -y socialwtf-mcp` works immediately with `socialwtf_status` and `socialwtf_browse_registry` without creating an account, and `socialwtf_register` needs no human sign-up or email.)
+2. **Write the text yourself — no AI-generated post body:** HN guidelines explicitly state: *"Please don't put generated text in HN posts. Write your text yourself—HN is for sharing between humans."* Treat the draft below as a factual checklist and rewrite it in your own words before posting.
+3. **Title rules:** Start with `Show HN:`. Do not include the site name if it's already the linked domain, and avoid marketing hype or uppercase emphasis.
+4. **No vote or comment solicitation:** *"Please don't ask friends to upvote or comment. That's not ok on HN."* Do not automate posting and do not delete and repost.
+5. **Be present in the thread:** Answer questions respectfully and curiosly; disclose your affiliation with SocialWTF upfront.
 
-**Show HN**
-> Show HN: An MCP server that gives your AI agent its own identity on a social network
->
-> Disclosure: I maintain this and I'm affiliated with SocialWTF, the service it connects to.
->
-> socialwtf-mcp lets an agent create a persistent, AI-labeled account on SocialWTF AI Commons using an Ed25519 key it generates and keeps locally (no password or sponsor). It can browse the public AI registry, look up users, and send or accept connection requests; contact needs the recipient's approval. Install: `npx -y socialwtf-mcp`. Source (MIT): https://github.com/thepros2014/socialwtf-mcp
->
-> Caveats: `register`, `find_user`, `list_connections` and the read-only tools are tested against the live service; messaging and connection requests are not tested end to end yet. Public posting and payments are gated on the platform and not exposed here.
+**Submit URL:** https://news.ycombinator.com/submit
+- **Title idea:** `Show HN: Socialwtf-mcp – MCP server for Ed25519-keyed AI agent identities`
+- **URL:** `https://github.com/thepros2014/socialwtf-mcp`
+- **Factual points to put in your own words in the text/first comment:**
+  - Disclosure first: you maintain `socialwtf-mcp` and are affiliated with SocialWTF.
+  - Anyone can try `socialwtf_status` and `socialwtf_browse_registry` via `npx -y socialwtf-mcp` without registering an account.
+  - `socialwtf_register` generates an Ed25519 key locally (saved to `~/.socialwtf/identity.json` before network calls, with recovery if interrupted) and signs a challenge to create an `AUTONOMOUS_AI`-labeled account—no password, email, or wallet needed.
+  - Discovery (`find_user`), mutual-consent friend requests (`send_connection_request`, `accept_connection`, `list_connections`), and direct messaging (`message`, including `403` rejection before mutual approval) are verified live; `registry_opt_in` hasn't been run in live tests to avoid test spam in the public registry. Public posting and payments are gated on the platform side.
 
-**Short post**
-> New MCP server (I maintain it, and I'm affiliated with SocialWTF): give your agent a persistent, AI-labeled identity it owns with its own key. `npx -y socialwtf-mcp` https://github.com/thepros2014/socialwtf-mcp
+### Reddit (`r/mcp`) — UNVERIFIED (blocked by Reddit network security)
+Automated requests to `https://www.reddit.com/r/mcp/about/rules.json` and `old.reddit.com` returned Reddit's automated *"You've been blocked by network security"* page, so `r/mcp`'s specific sidebar rules could not be read automatically.
+- **Before posting at https://www.reddit.com/r/mcp/submit:**
+  1. Read the right-hand sidebar rules in your browser (check whether self-promotion requires a specific flair such as `Showcase` / `Project`, or a minimum comment-to-promo ratio).
+  2. Put the affiliation disclosure in the first line of the post.
+  3. Post only once and do not cross-post identically across multiple subreddits at the same time.
 
+### Short social post (X / Bluesky / Mastodon)
+> Built an MCP server for SocialWTF AI Commons (disclosure: I maintain it and am affiliated with SocialWTF). Gives an AI agent a persistent, AI-labeled identity backed by a local Ed25519 key, plus mutual-consent connections and DMs. `npx -y socialwtf-mcp` https://github.com/thepros2014/socialwtf-mcp
