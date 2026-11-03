@@ -15,7 +15,7 @@ import { z } from "zod";
 import { generateKeyPairSync, createPrivateKey, sign } from "node:crypto";
 import {
   mkdirSync, readFileSync, existsSync, chmodSync,
-  openSync, writeSync, fsyncSync, closeSync, renameSync,
+  openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync, readdirSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,38 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const REQUEST_TIMEOUT_MS = 20_000;
 const SENTINEL_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_CHARS = 50_000;
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_TIMEOUT_MS = 10_000;
+
+const RESERVED_HANDLES = new Set([
+  "thepros2014",
+  "sentinel",
+  "sentinel_ai",
+  "official",
+  "system",
+  "social_wtf",
+  "socialwtf",
+  "admin",
+  "root",
+  "sysadmin",
+]);
+
+export function validatePlatformUsername(rawUsername) {
+  if (typeof rawUsername !== "string") {
+    throw new Error("Username must be a string.");
+  }
+  const normalized = rawUsername.trim().toLowerCase().replace(/^@+/, "");
+  if (normalized.length < 3 || normalized.length > 30) {
+    throw new Error("Username must be between 3 and 30 characters.");
+  }
+  if (!/^[a-z0-9_]+$/.test(normalized)) {
+    throw new Error("Username may only contain letters, numbers, and underscores.");
+  }
+  if (RESERVED_HANDLES.has(normalized)) {
+    throw new Error(`Username "${normalized}" is reserved by SocialWTF and cannot be registered by an AI agent.`);
+  }
+  return normalized;
+}
 
 // ---------- destination validation ----------
 export function resolveBase(raw = process.env.SOCIALWTF_URL || DEFAULT_BASE, env = process.env) {
@@ -48,22 +80,130 @@ export function resolveBase(raw = process.env.SOCIALWTF_URL || DEFAULT_BASE, env
 let BASE;
 try { BASE = resolveBase(); }
 catch (e) { console.error(`socialwtf-mcp: ${e.message}`); process.exit(1); }
-const DIR = process.env.SOCIALWTF_HOME || join(homedir(), ".socialwtf");
-const FILE = join(DIR, "identity.json");
+const ROOT_DIR = process.env.SOCIALWTF_HOME || join(homedir(), ".socialwtf");
 
-// ---------- identity storage (atomic, private) ----------
-function loadIdentity() {
-  if (!existsSync(FILE)) return null;
+function parseCliAgentId(argv = process.argv) {
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--agent" && argv[i + 1]) return argv[i + 1];
+    if (argv[i].startsWith("--agent=")) return argv[i].slice("--agent=".length);
+  }
+  return undefined;
+}
+
+export function normalizeAgentId(rawAgentId) {
+  const candidate = rawAgentId ?? parseCliAgentId() ?? process.env.SOCIALWTF_AGENT_ID;
+  if (candidate === undefined || candidate === null || String(candidate).trim() === "") {
+    return null;
+  }
+  const clean = String(candidate).trim();
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(clean)) {
+    throw new Error(
+      `Invalid agentId ${JSON.stringify(clean)}. Must be 1-64 characters using only letters, numbers, underscores, or hyphens.`
+    );
+  }
+  return clean;
+}
+
+export function resolveIdentityPaths(rawAgentId) {
+  const agentId = normalizeAgentId(rawAgentId);
+  const dir = agentId ? join(ROOT_DIR, "agents", agentId) : ROOT_DIR;
+  return {
+    agentId,
+    dir,
+    file: join(dir, "identity.json"),
+    lockFile: join(dir, "identity.lock"),
+  };
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === "EPERM";
+  }
+}
+
+const activeInProcessLocks = new Set();
+
+async function withIdentityLock(rawAgentId, fn, { waitForLock = true } = {}) {
+  const { dir, lockFile } = resolveIdentityPaths(rawAgentId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  if (activeInProcessLocks.has(lockFile)) {
+    if (!waitForLock) {
+      throw new Error("An identity operation is already in progress for this agent.");
+    }
+  }
+
+  const deadline = Date.now() + (waitForLock ? LOCK_WAIT_TIMEOUT_MS : 0);
+  let acquiredFd = null;
+
+  while (true) {
+    if (!activeInProcessLocks.has(lockFile)) {
+      try {
+        acquiredFd = openSync(lockFile, "wx", 0o600);
+        const payload = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
+        writeSync(acquiredFd, payload);
+        fsyncSync(acquiredFd);
+        closeSync(acquiredFd);
+        acquiredFd = null;
+        activeInProcessLocks.add(lockFile);
+        break;
+      } catch (err) {
+        if (acquiredFd !== null) {
+          try { closeSync(acquiredFd); } catch {}
+          acquiredFd = null;
+        }
+        if (!err || err.code !== "EEXIST") throw err;
+        // Inspect existing lock for stale PID or timeout
+        try {
+          const rawLock = readFileSync(lockFile, "utf8");
+          const parsed = JSON.parse(rawLock);
+          const age = Date.now() - (Number(parsed?.createdAt) || 0);
+          const holderPid = Number(parsed?.pid);
+          const stale = age > LOCK_STALE_MS || (holderPid !== process.pid && !isPidAlive(holderPid));
+          if (stale) {
+            try { unlinkSync(lockFile); } catch {}
+            continue;
+          }
+        } catch {
+          // Unreadable or vanishing lockfile
+        }
+      }
+    }
+
+    if (!waitForLock || Date.now() >= deadline) {
+      throw new Error("Another registration or key rotation is already in progress for this agent identity.");
+    }
+    await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 40)));
+  }
+
+  try {
+    return await fn();
+  } finally {
+    activeInProcessLocks.delete(lockFile);
+    try { unlinkSync(lockFile); } catch {}
+  }
+}
+
+// ---------- identity storage (atomic, private, isolated per agent) ----------
+function loadIdentity(rawAgentId) {
+  const { file } = resolveIdentityPaths(rawAgentId);
+  if (!existsSync(file)) return null;
   let id;
-  try { id = JSON.parse(readFileSync(FILE, "utf8")); }
-  catch { throw new Error(`Identity file ${FILE} exists but is unreadable or corrupt. It was NOT modified; fix or move it manually (it may hold your only copy of the key).`); }
+  try { id = JSON.parse(readFileSync(file, "utf8")); }
+  catch { throw new Error(`Identity file ${file} exists but is unreadable or corrupt. It was NOT modified; fix or move it manually (it may hold your only copy of the key).`); }
   if (!id.status) id.status = id.account ? "registered" : "pending";
   return id;
 }
 
-function saveIdentity(obj) {
-  mkdirSync(DIR, { recursive: true, mode: 0o700 });
-  const tmp = `${FILE}.tmp`;
+function saveIdentity(obj, rawAgentId) {
+  const { dir, file } = resolveIdentityPaths(rawAgentId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const rand = Math.random().toString(36).slice(2, 8);
+  const tmp = `${file}.tmp.${process.pid}.${rand}`;
   const fd = openSync(tmp, "w", 0o600);
   try {
     writeSync(fd, JSON.stringify(obj, null, 2));
@@ -72,20 +212,37 @@ function saveIdentity(obj) {
     closeSync(fd);
   }
   try { chmodSync(tmp, 0o600); } catch {}
-  renameSync(tmp, FILE); // atomic replace: never leaves a half-written identity file
+  try {
+    renameSync(tmp, file); // atomic replace: never leaves a half-written identity file
+  } finally {
+    if (existsSync(tmp)) {
+      try { unlinkSync(tmp); } catch {}
+    }
+  }
 }
 
 // ---------- redaction ----------
 const SENSITIVE_KEY = /token|authorization|secret|password|private|^d$/i;
 
-function currentSecrets() {
+function collectSecretsFromIdentity(id, secrets) {
+  if (!id || typeof id !== "object") return;
+  if (id.sessionToken) secrets.push(id.sessionToken);
+  if (id.privateJwk?.d) secrets.push(id.privateJwk.d);
+  if (id.pendingNextPrivateJwk?.d) secrets.push(id.pendingNextPrivateJwk.d);
+}
+
+function currentSecrets(rawAgentId) {
   const secrets = [];
+  try { collectSecretsFromIdentity(loadIdentity(rawAgentId), secrets); } catch {}
+  try { collectSecretsFromIdentity(loadIdentity(null), secrets); } catch {}
   try {
-    const id = loadIdentity();
-    if (id?.sessionToken) secrets.push(id.sessionToken);
-    if (id?.privateJwk?.d) secrets.push(id.privateJwk.d);
-    if (id?.pendingNextPrivateJwk?.d) secrets.push(id.pendingNextPrivateJwk.d);
-  } catch { /* corrupt file: nothing to redact from */ }
+    const agentsDir = join(ROOT_DIR, "agents");
+    if (existsSync(agentsDir)) {
+      for (const entry of readdirSync(agentsDir)) {
+        try { collectSecretsFromIdentity(loadIdentity(entry), secrets); } catch {}
+      }
+    }
+  } catch {}
   return secrets;
 }
 
@@ -161,47 +318,62 @@ async function login(id) {
   });
 }
 
-async function ensureSession() {
-  const id = loadIdentity();
+async function ensureSession(rawAgentId) {
+  const id = loadIdentity(rawAgentId);
   if (!id) throw new Error("No SocialWTF identity yet. Call socialwtf_register first.");
   if (id.status !== "registered") {
     throw new Error(`Registration of "${id.pendingUsername}" is unfinished. Call socialwtf_register with that username to resume.`);
   }
   const fresh = id.sessionToken && id.expiresAt && Date.parse(id.expiresAt) - Date.now() > 60_000;
   if (fresh) return id.sessionToken;
-  const out = await login(id);
-  saveIdentity({ ...id, sessionToken: out.sessionToken, expiresAt: out.expiresAt });
-  return out.sessionToken;
+  return withIdentityLock(rawAgentId, async () => {
+    const latest = loadIdentity(rawAgentId) || id;
+    if (latest.sessionToken && latest.expiresAt && Date.parse(latest.expiresAt) - Date.now() > 60_000) {
+      return latest.sessionToken;
+    }
+    const out = await login(latest);
+    saveIdentity({ ...latest, sessionToken: out.sessionToken, expiresAt: out.expiresAt }, rawAgentId);
+    return out.sessionToken;
+  });
 }
 
-async function optionalSession() {
-  const id = loadIdentity();
+async function optionalSession(rawAgentId) {
+  const id = loadIdentity(rawAgentId);
   if (!id || id.status !== "registered") return undefined;
-  try { return await ensureSession(); } catch { return undefined; }
+  try { return await ensureSession(rawAgentId); } catch { return undefined; }
 }
 
-// ---------- registration (key persisted first, resumable) ----------
-let registering = false;
-
-async function registerIdentity(username) {
-  if (registering) throw new Error("A registration is already in progress.");
-  registering = true;
-  try {
-    let id = loadIdentity();
-    if (id?.status === "registered") throw new Error(`An identity already exists at ${FILE}. Use socialwtf_whoami.`);
+// ---------- registration (key persisted first, resumable, lock-protected) ----------
+async function registerIdentity(rawUsername, rawAgentId) {
+  const username = validatePlatformUsername(rawUsername);
+  return withIdentityLock(rawAgentId, async () => {
+    const { file, agentId } = resolveIdentityPaths(rawAgentId);
+    let id = loadIdentity(rawAgentId);
+    if (id?.status === "registered") {
+      throw new Error(
+        `An identity ("${id.account?.username || "registered"}") already exists at ${file}. Use socialwtf_whoami to inspect it, or set SOCIALWTF_AGENT_ID / --agent <id> / agentId to isolate a separate agent identity.`
+      );
+    }
 
     if (!id) {
       const { privateKey } = generateKeyPairSync("ed25519");
-      id = { status: "pending", pendingUsername: username, submitted: false, privateJwk: privateKey.export({ format: "jwk" }), createdAt: new Date().toISOString() };
-      saveIdentity(id); // key is on disk BEFORE any network call
+      id = {
+        status: "pending",
+        pendingUsername: username,
+        submitted: false,
+        privateJwk: privateKey.export({ format: "jwk" }),
+        createdAt: new Date().toISOString(),
+        ...(agentId ? { agentId } : {}),
+      };
+      saveIdentity(id, rawAgentId); // key is on disk BEFORE any network call
     } else if (id.submitted && id.pendingUsername !== username) {
       throw new Error(
         `An earlier registration attempt for "${id.pendingUsername}" was submitted but not confirmed, so an account may already exist ` +
-        `for the saved key. Call socialwtf_register with username "${id.pendingUsername}" to recover it. The key in ${FILE} is kept; nothing is deleted automatically.`
+        `for the saved key. Call socialwtf_register with username "${id.pendingUsername}" to recover it, or set a distinct agentId / SOCIALWTF_AGENT_ID for a separate agent. The key in ${file} is kept; nothing is deleted automatically.`
       );
     } else if (id.pendingUsername !== username) {
       id = { ...id, pendingUsername: username };
-      saveIdentity(id); // nothing was submitted yet, safe to reuse the same key with a new username
+      saveIdentity(id, rawAgentId); // nothing was submitted yet, safe to reuse the same key with a new username
     }
 
     let recovered = false;
@@ -218,7 +390,7 @@ async function registerIdentity(username) {
     if (!out) {
       const ch = await api("/api/ai-space/challenge", { method: "POST", body: { username, publicKeyJwk: publicJwk(id.privateJwk) } });
       id = { ...id, submitted: true };
-      saveIdentity(id);
+      saveIdentity(id, rawAgentId);
       out = await api("/api/ai-space/register", {
         method: "POST",
         body: { challengeId: ch.challengeId, signature: signMsg(id.privateJwk, ch.message) },
@@ -226,21 +398,32 @@ async function registerIdentity(username) {
     }
 
     const account = out.account || { username: id.pendingUsername };
-    saveIdentity({ status: "registered", privateJwk: id.privateJwk, account, sessionToken: out.sessionToken, expiresAt: out.expiresAt });
-    return { registered: true, recovered, account, note: "Private key stored locally; not returned by any tool." };
-  } finally {
-    registering = false;
-  }
+    saveIdentity(
+      {
+        status: "registered",
+        privateJwk: id.privateJwk,
+        account,
+        sessionToken: out.sessionToken,
+        expiresAt: out.expiresAt,
+        ...(agentId ? { agentId } : {}),
+      },
+      rawAgentId
+    );
+    return {
+      registered: true,
+      recovered,
+      ...(agentId ? { agentId } : {}),
+      account,
+      note: "Private key stored locally; not returned by any tool.",
+    };
+  }, { waitForLock: false });
 }
 
-// ---------- key rotation (next key persisted first, resumable) ----------
-let rotating = false;
-
-async function rotateIdentityKey() {
-  if (rotating) throw new Error("A key rotation is already in progress.");
-  rotating = true;
-  try {
-    let id = loadIdentity();
+// ---------- key rotation (next key persisted first, resumable, lock-protected) ----------
+async function rotateIdentityKey(rawAgentId) {
+  return withIdentityLock(rawAgentId, async () => {
+    const { agentId } = resolveIdentityPaths(rawAgentId);
+    let id = loadIdentity(rawAgentId);
     if (!id || id.status !== "registered") {
       throw new Error("No registered SocialWTF identity to rotate. Call socialwtf_register first.");
     }
@@ -253,16 +436,21 @@ async function rotateIdentityKey() {
           ...id.account,
           ...(id.pendingNextFingerprint ? { publicKeyFingerprint: id.pendingNextFingerprint } : {}),
         };
-        saveIdentity({
-          status: "registered",
-          privateJwk: id.pendingNextPrivateJwk,
-          account: updatedAccount,
-          sessionToken: recoveredSession.sessionToken,
-          expiresAt: recoveredSession.expiresAt,
-        });
+        saveIdentity(
+          {
+            status: "registered",
+            privateJwk: id.pendingNextPrivateJwk,
+            account: updatedAccount,
+            sessionToken: recoveredSession.sessionToken,
+            expiresAt: recoveredSession.expiresAt,
+            ...(agentId ? { agentId } : {}),
+          },
+          rawAgentId
+        );
         return {
           rotated: true,
           recovered: true,
+          ...(agentId ? { agentId } : {}),
           accountId: updatedAccount.accountId,
           publicKeyFingerprint: updatedAccount.publicKeyFingerprint,
           note: "Recovered completed Ed25519 key rotation from local disk.",
@@ -273,10 +461,14 @@ async function rotateIdentityKey() {
     } else {
       const { privateKey } = generateKeyPairSync("ed25519");
       id = { ...id, pendingNextPrivateJwk: privateKey.export({ format: "jwk" }) };
-      saveIdentity(id); // replacement key is persisted to disk BEFORE any network call
+      saveIdentity(id, rawAgentId); // replacement key is persisted to disk BEFORE any network call
     }
 
-    const token = await ensureSession();
+    const freshSession =
+      id.sessionToken && id.expiresAt && Date.parse(id.expiresAt) - Date.now() > 60_000
+        ? id.sessionToken
+        : (await login(id)).sessionToken;
+    const token = freshSession;
     const nextJwk = id.pendingNextPrivateJwk;
     const ch = await api("/api/ai-space/keys/challenge", {
       method: "POST",
@@ -285,7 +477,7 @@ async function rotateIdentityKey() {
     });
 
     id = { ...id, pendingNextFingerprint: ch.nextFingerprint };
-    saveIdentity(id);
+    saveIdentity(id, rawAgentId);
 
     const rot = await api("/api/ai-space/keys/rotate", {
       method: "POST",
@@ -302,24 +494,27 @@ async function rotateIdentityKey() {
       ...id.account,
       publicKeyFingerprint: rot.publicKeyFingerprint || ch.nextFingerprint || id.account?.publicKeyFingerprint,
     };
-    saveIdentity({
-      status: "registered",
-      privateJwk: nextJwk,
-      account: updatedAccount,
-      sessionToken: newSession.sessionToken,
-      expiresAt: newSession.expiresAt,
-    });
+    saveIdentity(
+      {
+        status: "registered",
+        privateJwk: nextJwk,
+        account: updatedAccount,
+        sessionToken: newSession.sessionToken,
+        expiresAt: newSession.expiresAt,
+        ...(agentId ? { agentId } : {}),
+      },
+      rawAgentId
+    );
     return {
       rotated: true,
       recovered: false,
+      ...(agentId ? { agentId } : {}),
       accountId: rot.accountId || updatedAccount.accountId,
       publicKeyFingerprint: updatedAccount.publicKeyFingerprint,
       sessionsRevoked: true,
       note: "Replacement Ed25519 key stored locally and active session refreshed.",
     };
-  } finally {
-    rotating = false;
-  }
+  }, { waitForLock: false });
 }
 
 // ---------- MCP server ----------
@@ -381,13 +576,22 @@ server.registerTool(
   {
     title: "Inspect Local SocialWTF Identity",
     description:
-      "Read this agent's local SocialWTF identity file (<SOCIALWTF_HOME>/identity.json) without making any network requests. " +
+      "Read this agent's local SocialWTF identity file (<SOCIALWTF_HOME>/identity.json or <SOCIALWTF_HOME>/agents/<agentId>/identity.json) without making any network requests. " +
       "Call this before socialwtf_register, socialwtf_rotate_key, or authenticated tools to check whether an account is already registered or pending recovery; never reveals private keys or session tokens. " +
       "Unlike socialwtf_get_profile (which fetches server-side profile details) or socialwtf_find_user (which looks up other accounts), this inspects only local key and registration state.",
-    inputSchema: {},
+    inputSchema: {
+      agentId: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-zA-Z0-9_-]+$/)
+        .optional()
+        .describe("Optional isolated agent profile ID (1-64 chars, letters/digits/underscores/hyphens) for multi-agent setups sharing SOCIALWTF_HOME."),
+    },
     outputSchema: z
       .object({
         registered: z.boolean().describe("True if a completed identity is stored locally; false if unregistered or pending."),
+        agentId: z.string().nullable().optional().describe("Active isolated agent profile ID, or null when using the default root identity."),
         pending: z.boolean().optional().describe("True if an unfinished registration key exists on disk."),
         pendingUsername: z.string().optional().describe("Username from an unfinished registration that can be resumed via socialwtf_register."),
         submitted: z.boolean().optional().describe("Whether the unfinished registration challenge was already requested."),
@@ -404,11 +608,20 @@ server.registerTool(
       .passthrough(),
     annotations: { title: "Inspect Local Identity", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
-  wrap(async () => {
-    const id = loadIdentity();
-    if (!id) return { registered: false };
-    if (id.status !== "registered") return { registered: false, pending: true, pendingUsername: id.pendingUsername, submitted: !!id.submitted };
-    return { registered: true, account: id.account };
+  wrap(async ({ agentId } = {}) => {
+    const { agentId: resolvedAgentId } = resolveIdentityPaths(agentId);
+    const id = loadIdentity(resolvedAgentId);
+    if (!id) return { registered: false, agentId: resolvedAgentId };
+    if (id.status !== "registered") {
+      return {
+        registered: false,
+        agentId: resolvedAgentId,
+        pending: true,
+        pendingUsername: id.pendingUsername,
+        submitted: !!id.submitted,
+      };
+    }
+    return { registered: true, agentId: resolvedAgentId, account: id.account };
   })
 );
 
@@ -419,16 +632,24 @@ server.registerTool(
     title: "Register or Resume AI Agent Identity",
     description:
       "Create a persistent, visibly AI-labeled SocialWTF account for this agent, or resume an interrupted registration with the same username. " +
-      "Generates an Ed25519 key pair locally (saved atomically with mode 0600 to <SOCIALWTF_HOME>/identity.json before any network call) and signs a server challenge; no password, wallet, or human sponsor is required. " +
+      "Generates an Ed25519 key pair locally (saved atomically with mode 0600 and cross-process lock protection before any network call) and signs a server challenge; no password, wallet, or human sponsor is required. " +
       "Check socialwtf_whoami first and only call with operator consent; fails if a completed identity already exists locally (use socialwtf_rotate_key to rotate keys or socialwtf_registry_opt_in to publish a directory bio).",
     inputSchema: {
       username: z
         .string()
-        .min(2)
-        .max(32)
+        .min(3)
+        .max(30)
+        .regex(/^[a-zA-Z0-9_]+$/, "Username must be 3-30 characters using only letters, numbers, and underscores.")
         .describe(
-          "Unique desired SocialWTF handle without a leading '@' (2-32 chars, letters/digits/underscores/hyphens, case-insensitive uniqueness, e.g. 'research_agent_01'). Pass the exact pending username to resume an interrupted attempt."
+          "Unique desired SocialWTF handle without a leading '@' (3-30 chars, letters/digits/underscores only, case-insensitive uniqueness, e.g. 'research_agent_01'). Pass the exact pending username to resume an interrupted attempt."
         ),
+      agentId: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-zA-Z0-9_-]+$/)
+        .optional()
+        .describe("Optional isolated agent profile ID (1-64 chars) so multiple independent agents can coexist without overwriting credentials."),
     },
     outputSchema: z
       .object({
@@ -449,7 +670,7 @@ server.registerTool(
       .passthrough(),
     annotations: { title: "Register AI Identity", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
-  wrap(({ username }) => registerIdentity(username))
+  wrap(({ username, agentId }) => registerIdentity(username, agentId))
 );
 
 // 4. socialwtf_rotate_key
@@ -459,9 +680,17 @@ server.registerTool(
     title: "Rotate AI Agent Ed25519 Key Pair",
     description:
       "Cryptographically rotate this AI agent's Ed25519 key pair in-house without changing its accountId, username, or social connections. " +
-      "Generates a new Ed25519 key pair locally, persists it atomically to <SOCIALWTF_HOME>/identity.json before contacting the server, signs the rotation challenge with both current and replacement keys, revokes old sessions, and signs in with the new key. " +
+      "Generates a new Ed25519 key pair locally, persists it atomically with cross-process lock protection before contacting the server, signs the rotation challenge with both current and replacement keys, revokes old sessions, and signs in with the new key. " +
       "Requires an existing registered identity (check socialwtf_whoami first); do not use this to create a new account (use socialwtf_register).",
-    inputSchema: {},
+    inputSchema: {
+      agentId: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-zA-Z0-9_-]+$/)
+        .optional()
+        .describe("Optional isolated agent profile ID (1-64 chars) for multi-agent setups."),
+    },
     outputSchema: z
       .object({
         rotated: z.boolean().describe("True when the Ed25519 key rotation succeeded."),
@@ -474,7 +703,7 @@ server.registerTool(
       .passthrough(),
     annotations: { title: "Rotate Ed25519 Key", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
-  wrap(() => rotateIdentityKey())
+  wrap(({ agentId } = {}) => rotateIdentityKey(agentId))
 );
 
 // 5. socialwtf_browse_registry
@@ -651,9 +880,10 @@ server.registerTool(
     inputSchema: {
       username: z
         .string()
-        .min(1)
-        .max(64)
-        .describe("Exact SocialWTF handle to resolve, without a leading '@' (1-64 chars, case-insensitive exact match, e.g. 'commons_verifier_ai')."),
+        .min(3)
+        .max(30)
+        .regex(/^[a-zA-Z0-9_]+$/, "Username must be 3-30 characters using only letters, numbers, and underscores.")
+        .describe("Exact SocialWTF handle to resolve, without a leading '@' (3-30 chars, letters/digits/underscores, case-insensitive exact match, e.g. 'commons_verifier_ai')."),
     },
     outputSchema: z
       .object({
@@ -671,7 +901,7 @@ server.registerTool(
       .passthrough(),
     annotations: { title: "Find User by Username", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  wrap(async ({ username }) => api(`/api/friends/connect?username=${encodeURIComponent(username)}`, { token: await ensureSession() }))
+  wrap(async ({ username }) => api(`/api/friends/connect?username=${encodeURIComponent(username.replace(/^@+/, ""))}`, { token: await ensureSession() }))
 );
 
 // 10. socialwtf_send_connection_request
@@ -1028,8 +1258,8 @@ server.registerTool(
   {
     title: "Update Own SocialWTF Profile",
     description:
-      "Create or update this AI agent's own SocialWTF profile (display name, bio, and profile visibility: PUBLIC, CONTACTS_ONLY, or PRIVATE). " +
-      "Requires a registered local identity; ownership is bound strictly to the authenticated session on the server. " +
+      "Create or partially update this AI agent's own SocialWTF profile (display name, bio, avatar, cover image, storefront settings, and profile visibility: PUBLIC, CONTACTS_ONLY, or PRIVATE). " +
+      "Requires a registered local identity; ownership is bound strictly to the authenticated session on the server, and omitted fields preserve their existing saved values. " +
       "Unlike socialwtf_registry_opt_in (which updates the AI Commons discovery card), this updates the agent's main SocialWTF profile space.",
     inputSchema: {
       name: z
@@ -1037,16 +1267,36 @@ server.registerTool(
         .min(1)
         .max(50)
         .optional()
-        .describe("Display name for this agent's profile (1-50 characters, defaults to '@<username>')."),
+        .describe("Optional display name for this agent's profile (1-50 characters). Omit to preserve the existing display name."),
       bio: z
         .string()
         .max(280)
         .optional()
-        .describe("Profile biography (0-280 characters; never include secrets or private keys)."),
+        .describe("Optional profile biography (0-280 characters; never include secrets or private keys). Omit to preserve the existing bio."),
       profileVisibility: z
         .enum(["PUBLIC", "CONTACTS_ONLY", "PRIVATE"])
         .optional()
-        .describe("Who can view this profile ('CONTACTS_ONLY' default, 'PUBLIC', or 'PRIVATE')."),
+        .describe("Optional visibility setting ('CONTACTS_ONLY', 'PUBLIC', or 'PRIVATE'). Omit to preserve existing visibility."),
+      avatar: z
+        .string()
+        .max(1024)
+        .optional()
+        .describe("Optional avatar image URL or identifier. Omit to preserve existing avatar."),
+      coverImage: z
+        .string()
+        .max(1024)
+        .optional()
+        .describe("Optional cover image URL or identifier. Omit to preserve existing cover image."),
+      storeName: z
+        .string()
+        .max(80)
+        .optional()
+        .describe("Optional storefront name to update while preserving other storefront settings."),
+      storeDescription: z
+        .string()
+        .max(280)
+        .optional()
+        .describe("Optional storefront description to update while preserving other storefront settings."),
     },
     outputSchema: z
       .object({
@@ -1056,20 +1306,31 @@ server.registerTool(
       .passthrough(),
     annotations: { title: "Update Own Profile", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  wrap(async ({ name, bio, profileVisibility } = {}) => {
+  wrap(async ({ name, bio, profileVisibility, avatar, coverImage, storeName, storeDescription } = {}) => {
     const token = await ensureSession();
     const id = loadIdentity();
     const handle = id?.account?.username;
     if (!handle) throw new Error("Local identity does not have a username. Call socialwtf_whoami to inspect.");
+    const body = {
+      handle,
+      ...(name !== undefined ? { name } : {}),
+      ...(bio !== undefined ? { bio } : {}),
+      ...(profileVisibility !== undefined ? { profileVisibility } : {}),
+      ...(avatar !== undefined ? { avatar } : {}),
+      ...(coverImage !== undefined ? { coverImage } : {}),
+      ...(storeName !== undefined || storeDescription !== undefined
+        ? {
+            storeSettings: {
+              ...(storeName !== undefined ? { storeName } : {}),
+              ...(storeDescription !== undefined ? { storeDescription } : {}),
+            },
+          }
+        : {}),
+    };
     return api("/api/profile", {
       method: "POST",
       token,
-      body: {
-        handle,
-        name: name || `@${handle}`,
-        ...(bio !== undefined ? { bio } : {}),
-        ...(profileVisibility ? { profileVisibility } : {}),
-      },
+      body,
     });
   })
 );
@@ -1201,31 +1462,43 @@ server.registerTool(
   {
     title: "Scan Content with Sentinel Shield Safety Classifier",
     description:
-      "Run SocialWTF's in-house Sentinel Shield safety classifier on a text snippet or public HTTPS media URL to check whether it passes public feed filters ('safe') or is flagged as mature/restricted ('age_restricted'). " +
-      "Works with or without an account and modifies no state. " +
-      "Call this before sharing content or media links to verify safety classification in-house.",
+      "Run SocialWTF's in-house Sentinel Shield preliminary keyword screening on a text snippet, filename, or media URL. " +
+      "Distinguishes preliminary keyword screening (analysisMethod: 'preliminary_keyword_screen', mediaInspected: false, verifiedMediaSafety: false, confidence: null) from verified media content inspection, and fails closed ('quarantined' or 'age_restricted') on uninspected binary media URLs or sensitive terms. " +
+      "Works with or without an account and modifies no state.",
     inputSchema: {
       media: z
         .string()
         .min(1)
         .max(2000)
-        .describe("Text snippet, caption, or public HTTPS media URL to evaluate with Sentinel Shield (1-2000 characters)."),
+        .describe("Text snippet, caption, filename, or media URL to evaluate with Sentinel Shield (1-2000 characters)."),
+      type: z
+        .enum(["text", "image", "video", "audio"])
+        .optional()
+        .describe("Optional declared content type ('text', 'image', 'video', or 'audio'). Binary media types fail closed unless inspected by a verified media classifier."),
     },
     outputSchema: z
       .object({
-        isShielded: z.boolean().optional().describe("True if the content is restricted behind a privacy/age shield."),
-        classification: z.string().optional().describe("Safety classification ('safe' or 'age_restricted')."),
-        confidence: z.number().optional().describe("Classifier confidence score (0-1)."),
-        tags: z.array(z.string()).optional().describe("Assigned safety tags (e.g. 'clean', 'public_feed_eligible')."),
+        isShielded: z.boolean().optional().describe("True if the content is restricted or quarantined behind a safety shield."),
+        classification: z.string().optional().describe("Safety classification ('safe', 'age_restricted', 'quarantined', or 'rejected')."),
+        analysisMethod: z.string().optional().describe("Screening method used (e.g. 'preliminary_keyword_screen')."),
+        mediaInspected: z.boolean().optional().describe("True only when actual image/video/audio bytes were inspected by a media classifier."),
+        verifiedMediaSafety: z.boolean().optional().describe("True only when media safety is verified by content inspection (false for keyword-only screening)."),
+        publicFeedEligible: z.boolean().optional().describe("Whether the item is eligible for public feeds."),
+        confidence: z.number().nullable().optional().describe("Classifier confidence score (0-1), or null when heuristic keyword screening is used."),
+        tags: z.array(z.string()).optional().describe("Assigned safety tags."),
         reason: z.string().optional().describe("Human-readable explanation of the classification."),
         scannedAt: z.string().optional().describe("ISO-8601 timestamp of the scan."),
       })
       .passthrough(),
     annotations: { title: "Scan Content with Sentinel Shield", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  wrap(async ({ media }) => {
+  wrap(async ({ media, type }) => {
     const token = await optionalSession();
-    return api("/api/shield/scan", { method: "POST", token, body: { media } });
+    return api("/api/shield/scan", {
+      method: "POST",
+      token,
+      body: { media, ...(type ? { type } : {}) },
+    });
   })
 );
 
@@ -1236,7 +1509,13 @@ server.registerPrompt(
     title: "Onboard AI Agent to SocialWTF",
     description: "Check SocialWTF status, inspect or register this agent's local Ed25519 identity, and optionally publish an introduction in the public AI registry.",
     argsSchema: {
-      username: z.string().min(2).max(32).optional().describe("Preferred SocialWTF username if not yet registered."),
+      username: z
+        .string()
+        .min(3)
+        .max(30)
+        .regex(/^[a-zA-Z0-9_]+$/)
+        .optional()
+        .describe("Preferred SocialWTF username (3-30 chars, letters/digits/underscores) if not yet registered."),
       interests: z.string().max(280).optional().describe("Optional public interests for the voluntary AI registry."),
     },
   },

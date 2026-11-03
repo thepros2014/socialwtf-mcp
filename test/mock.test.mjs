@@ -3,7 +3,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER = join(ROOT, "index.mjs");
 
 // ---------- mock service ----------
-const state = { accounts: new Map(), challenges: new Map(), sessions: new Set(), observed: {}, dropNextRegister: false, homeForCheck: null, leakToken: null };
+const state = { accounts: new Map(), challenges: new Map(), sessions: new Set(), profiles: new Map(), lastProfilePostBody: null, observed: {}, dropNextRegister: false, homeForCheck: null, leakToken: null };
 let mock, port;
 
 const readBody = (req) => new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(b ? JSON.parse(b) : {})); });
@@ -63,8 +63,15 @@ before(async () => {
     if (url.pathname === "/api/ai-space/keys/challenge") {
       const f = join(state.homeForCheck, "identity.json");
       const saved = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null;
-      state.observed.nextKeyOnDiskAtChallenge = saved?.pendingNextPrivateJwk?.x === body.nextPublicKeyJwk?.x;
-      const currentJwk = saved?.privateJwk ? { kty: "OKP", crv: "Ed25519", x: saved.privateJwk.x } : null;
+      if (saved) {
+        state.observed.nextKeyOnDiskAtChallenge = saved?.pendingNextPrivateJwk?.x === body.nextPublicKeyJwk?.x;
+      }
+      // Support both root identity.json and isolated agents/<agentId>/identity.json in mock server
+      let currentJwk = saved?.privateJwk ? { kty: "OKP", crv: "Ed25519", x: saved.privateJwk.x } : null;
+      if (!currentJwk || !state.accounts.has(keyOf(currentJwk))) {
+        const matchedKey = [...state.accounts.keys()].find((k) => k !== body.nextPublicKeyJwk?.x);
+        if (matchedKey) currentJwk = { kty: "OKP", crv: "Ed25519", x: matchedKey };
+      }
       if (!currentJwk || !state.accounts.has(keyOf(currentJwk))) return send(res, 404, { error: "UNKNOWN_CURRENT_KEY" });
       const id = randomBytes(8).toString("hex");
       const message = `rotate ${currentJwk.x} -> ${body.nextPublicKeyJwk.x} ${id}`;
@@ -121,10 +128,35 @@ before(async () => {
       });
     }
     if (url.pathname === "/api/profile" && req.method === "GET") {
-      return send(res, 200, { success: true, profile: { handle: url.searchParams.get("handle") || "omni_agent", name: "Omni AI", bio: "In-house test agent" }, isOwner: !url.searchParams.get("handle") });
+      const handle = url.searchParams.get("handle") || "omni_agent";
+      const existing = state.profiles.get(handle) || { handle, name: "Omni AI", bio: "In-house test agent", profileVisibility: "CONTACTS_ONLY" };
+      return send(res, 200, { success: true, profile: existing, isOwner: !url.searchParams.get("handle") });
     }
     if (url.pathname === "/api/profile" && req.method === "POST") {
-      return send(res, 200, { success: true, profile: { handle: body.handle, name: body.name, bio: body.bio || "", profileVisibility: body.profileVisibility || "CONTACTS_ONLY" } });
+      state.lastProfilePostBody = body;
+      const prev = state.profiles.get(body.handle) || {
+        handle: body.handle,
+        name: `@${body.handle}`,
+        bio: "",
+        avatar: "",
+        coverImage: "",
+        profileVisibility: "CONTACTS_ONLY",
+        storeSettings: { storeName: "Default Store", storeDescription: "Default Desc" },
+      };
+      const merged = {
+        ...prev,
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.bio !== undefined ? { bio: body.bio } : {}),
+        ...(body.avatar !== undefined ? { avatar: body.avatar } : {}),
+        ...(body.coverImage !== undefined ? { coverImage: body.coverImage } : {}),
+        ...(body.profileVisibility !== undefined ? { profileVisibility: body.profileVisibility } : {}),
+        storeSettings: {
+          ...prev.storeSettings,
+          ...(body.storeSettings || {}),
+        },
+      };
+      state.profiles.set(body.handle, merged);
+      return send(res, 200, { success: true, profile: merged });
     }
     if (url.pathname === "/api/posts" && req.method === "GET") return send(res, 200, { posts: [{ id: "post_1", authorName: "sec_bot", content: "Ed25519 key rotation is live" }] });
     if (url.pathname === "/api/community" && req.method === "GET") return send(res, 200, { posts: [{ id: "comm_1", author: "art_bot", text: "Welcome to AI Commons" }] });
@@ -144,7 +176,33 @@ before(async () => {
       return send(res, 200, { configured: true, inferenceVerified: true, status: "ready", model: "thepros2014/sentinel (Qwen/Qwen3-4B-Instruct-2507)", provider: "owned-huggingface" });
     }
     if (url.pathname === "/api/shield/scan" && req.method === "POST") {
-      return send(res, 200, { isShielded: false, classification: "safe", confidence: 0.99, tags: ["clean", "public_feed_eligible"], reason: "No policy violations detected by in-house Sentinel Shield.", scannedAt: new Date().toISOString() });
+      const isMedia = body.type === "image" || body.type === "video" || /\.(jpg|jpeg|png|gif|webp|mp4)(\?|$)/i.test(body.media || "");
+      if (isMedia) {
+        return send(res, 200, {
+          isShielded: true,
+          classification: "quarantined",
+          analysisMethod: "preliminary_keyword_screen",
+          mediaInspected: false,
+          verifiedMediaSafety: false,
+          publicFeedEligible: false,
+          confidence: null,
+          tags: ["uninspected_media", "preliminary_keyword_screen"],
+          reason: "Preliminary keyword screen only: actual image/video/audio bytes were not inspected.",
+          scannedAt: new Date().toISOString(),
+        });
+      }
+      return send(res, 200, {
+        isShielded: false,
+        classification: "safe",
+        analysisMethod: "preliminary_keyword_screen",
+        mediaInspected: false,
+        verifiedMediaSafety: false,
+        publicFeedEligible: true,
+        confidence: null,
+        tags: ["preliminary_keyword_pass", "text_only_screened"],
+        reason: "Passed preliminary keyword screening (text-only heuristic; media bytes not inspected).",
+        scannedAt: new Date().toISOString(),
+      });
     }
     if (url.pathname === "/api/friends/connect") return send(res, 500, { error: `boom, token was ${state.leakToken}` });
     send(res, 404, { error: "NOT_FOUND" });
@@ -158,13 +216,26 @@ after(() => mock.close());
 async function withServer(home, fn, env = {}) {
   state.homeForCheck = home;
   const transport = new StdioClientTransport({
-    command: process.execPath, args: [SERVER],
+    command: process.execPath,
+    args: ["--max-old-space-size=128", SERVER],
     env: { ...process.env, SOCIALWTF_URL: `http://127.0.0.1:${port}`, SOCIALWTF_ALLOW_CUSTOM_URL: "1", SOCIALWTF_HOME: home, ...env },
   });
   const client = new Client({ name: "test", version: "1" });
   await client.connect(transport);
   const call = async (name, args = {}) => { const r = await client.callTool({ name, arguments: args }); return { isError: !!r.isError, text: r.content[0].text }; };
-  try { return await fn(call, client); } finally { await client.close(); }
+  try {
+    return await fn(call, client);
+  } finally {
+    const proc = transport._process;
+    await client.close();
+    if (proc && proc.exitCode === null) {
+      try { proc.kill(); } catch {}
+      await new Promise((resolve) => {
+        proc.once("close", resolve);
+        setTimeout(resolve, 500);
+      });
+    }
+  }
 }
 const newHome = () => mkdtempSync(join(tmpdir(), "swtf-test-"));
 const readId = (home) => JSON.parse(readFileSync(join(home, "identity.json"), "utf8"));
@@ -232,7 +303,7 @@ test("session token and key material are redacted from outputs and error bodies"
     await call("socialwtf_register", { username: "eps_agent" });
     const secrets = [readId(home).privateJwk.d];
     const list = await call("socialwtf_list_connections");
-    const err = await call("socialwtf_find_user", { username: "x" });
+    const err = await call("socialwtf_find_user", { username: "xxx" });
     secrets.push(state.leakToken);
     for (const out of [list.text, err.text]) for (const s of secrets) assert.ok(!out.includes(s), "secret leaked in output");
     assert.match(list.text, /\[redacted\]/);
@@ -254,7 +325,7 @@ test("redirects are not followed, so the bearer token never reaches the redirect
 });
 
 test("destination validation", () => {
-  const run = (env) => spawnSync(process.execPath, [SERVER], { input: "", encoding: "utf8", timeout: 5000, env: { ...process.env, SOCIALWTF_HOME: newHome(), ...env } });
+  const run = (env) => spawnSync(process.execPath, ["--max-old-space-size=128", SERVER], { input: "", encoding: "utf8", timeout: 5000, env: { ...process.env, SOCIALWTF_HOME: newHome(), ...env } });
   const bad = [
     [{ SOCIALWTF_URL: "http://www.socialwtf.wtf" }, /https/],
     [{ SOCIALWTF_URL: "http://evil.example" }, /https/],
@@ -387,5 +458,99 @@ test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, 
     const shield = JSON.parse((await call("socialwtf_shield_scan", { media: "Friendly greeting from an AI agent" })).text);
     assert.equal(shield.classification, "safe");
     assert.equal(shield.isShielded, false);
+    assert.equal(shield.analysisMethod, "preliminary_keyword_screen");
+    assert.equal(shield.mediaInspected, false);
+    assert.equal(shield.verifiedMediaSafety, false);
+    assert.equal(shield.confidence, null);
+
+    const mediaShield = JSON.parse((await call("socialwtf_shield_scan", { media: "https://cdn.socialwtf.wtf/family_vacation.jpg", type: "image" })).text);
+    assert.equal(mediaShield.classification, "quarantined");
+    assert.equal(mediaShield.isShielded, true);
+    assert.equal(mediaShield.verifiedMediaSafety, false);
+  });
+});
+
+test("multi-agent credential isolation: concurrent agents in shared SOCIALWTF_HOME never collide", async () => {
+  const sharedHome = newHome();
+  await withServer(sharedHome, async (call) => {
+    const [r1, r2] = await Promise.all([
+      call("socialwtf_register", { username: "iso_agent_one", agentId: "agent_one" }),
+      call("socialwtf_register", { username: "iso_agent_two", agentId: "agent_two" }),
+    ]);
+    assert.equal(r1.isError, false, r1.text);
+    assert.equal(r2.isError, false, r2.text);
+    assert.equal(JSON.parse(r1.text).registered, true);
+    assert.equal(JSON.parse(r2.text).registered, true);
+
+    const who1 = JSON.parse((await call("socialwtf_whoami", { agentId: "agent_one" })).text);
+    const who2 = JSON.parse((await call("socialwtf_whoami", { agentId: "agent_two" })).text);
+    assert.equal(who1.agentId, "agent_one");
+    assert.equal(who1.account.username, "iso_agent_one");
+    assert.equal(who2.agentId, "agent_two");
+    assert.equal(who2.account.username, "iso_agent_two");
+  });
+
+  // Also verify SOCIALWTF_AGENT_ID env isolation loads the exact matching agent identity
+  await withServer(sharedHome, async (call) => {
+    const whoEnv = JSON.parse((await call("socialwtf_whoami")).text);
+    assert.equal(whoEnv.registered, true);
+    assert.equal(whoEnv.agentId, "agent_two");
+    assert.equal(whoEnv.account.username, "iso_agent_two");
+  }, { SOCIALWTF_AGENT_ID: "agent_two" });
+
+  const id1 = JSON.parse(readFileSync(join(sharedHome, "agents", "agent_one", "identity.json"), "utf8"));
+  const id2 = JSON.parse(readFileSync(join(sharedHome, "agents", "agent_two", "identity.json"), "utf8"));
+  assert.equal(id1.account.username, "iso_agent_one");
+  assert.equal(id2.account.username, "iso_agent_two");
+  assert.notEqual(id1.privateJwk.d, id2.privateJwk.d);
+});
+
+test("stale identity.lock from a crashed process is automatically recovered", async () => {
+  const home = newHome();
+  writeFileSync(join(home, "identity.lock"), JSON.stringify({ pid: 99999999, createdAt: 1000 }), "utf8");
+  await withServer(home, async (call) => {
+    const reg = await call("socialwtf_register", { username: "lock_rec_agent" });
+    assert.equal(reg.isError, false, reg.text);
+    assert.equal(JSON.parse(reg.text).registered, true);
+  });
+  assert.equal(existsSync(join(home, "identity.lock")), false);
+});
+
+test("partial profile updates via socialwtf_update_profile preserve unspecified fields", async () => {
+  const home = newHome();
+  await withServer(home, async (call) => {
+    await call("socialwtf_register", { username: "partial_prof_ai" });
+    const full = JSON.parse((await call("socialwtf_update_profile", {
+      name: "Custom Display Name",
+      bio: "Initial bio",
+      profileVisibility: "PUBLIC",
+      avatar: "https://socialwtf.wtf/avatar.png",
+      coverImage: "https://socialwtf.wtf/cover.png",
+      storeName: "AI Boutique",
+      storeDescription: "Original storefront",
+    })).text);
+    assert.equal(full.profile.name, "Custom Display Name");
+    assert.equal(full.profile.avatar, "https://socialwtf.wtf/avatar.png");
+    assert.equal(full.profile.storeSettings.storeName, "AI Boutique");
+
+    // Partial update: only bio is provided
+    const partial = JSON.parse((await call("socialwtf_update_profile", { bio: "Updated bio only" })).text);
+    assert.equal(state.lastProfilePostBody.name, undefined, "Omitted name must not be overwritten with @handle");
+    assert.equal(partial.profile.name, "Custom Display Name");
+    assert.equal(partial.profile.bio, "Updated bio only");
+    assert.equal(partial.profile.profileVisibility, "PUBLIC");
+    assert.equal(partial.profile.avatar, "https://socialwtf.wtf/avatar.png");
+    assert.equal(partial.profile.coverImage, "https://socialwtf.wtf/cover.png");
+    assert.equal(partial.profile.storeSettings.storeName, "AI Boutique");
+  });
+});
+
+test("username validation blocks invalid formats and reserved platform handles", async () => {
+  const home = newHome();
+  await withServer(home, async (call) => {
+    for (const bad of ["ab", "a".repeat(31), "bad-hyphen", "thepros2014", "sentinel", "official", "system", "admin"]) {
+      const res = await call("socialwtf_register", { username: bad });
+      assert.equal(res.isError, true, `Expected username "${bad}" to be rejected`);
+    }
   });
 });
