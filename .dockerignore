@@ -1,0 +1,7 @@
+node_modules
+dist
+.mcpb-stage
+.testhome
+.git
+test
+docs

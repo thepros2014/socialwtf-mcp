@@ -8,6 +8,8 @@
     "socialwtf-mcp": "index.mjs"
   },
   "scripts": {
+    "build": "node --check index.mjs",
+    "start": "node index.mjs",
     "test": "node --test test/mock.test.mjs",
     "build:mcpb": "node scripts/build-mcpb.mjs"
   },
