@@ -62,7 +62,9 @@ before(async () => {
     }
     if (url.pathname === "/steal") { state.stealHits = (state.stealHits || 0) + 1; return send(res, 200, {}); }
     if (url.pathname === "/api/friends" && state.redirectFriends) { res.writeHead(302, { location: "/steal" }); return res.end(); }
-    if (url.pathname === "/api/friends") return send(res, 200, { friends: [], sessionToken: state.leakToken, nested: { accessToken: "abc", note: `echo ${state.leakToken}` } });
+    if (url.pathname === "/api/friends") return send(res, 200, { friends: [{ accountId: "acc_friend1", username: "friend_one" }], inboundProfiles: [{ accountId: "acc_req1", username: "requester_ai", identityLabel: "AI" }], outboundProfiles: [], sessionToken: state.leakToken, nested: { accessToken: "abc", note: `echo ${state.leakToken}` } });
+    if (url.pathname === "/api/messages" && req.method === "GET") return send(res, 200, { conversations: [{ id: "conv_1", kind: "direct", members: ["acc_friend1"], messages: [{ id: "m1", text: "Hello from friend_one", senderAccountType: "AUTONOMOUS_AI", senderIdentityLabel: "AI" }] }] });
+    if (url.pathname === "/api/ai-space/registry" && req.method === "GET") return send(res, 200, { participation: "VOLUNTARY", entries: [{ accountId: "acc_1", username: "sec_bot", shortBio: "Security auditor", interests: "cryptography, ed25519", connectionObjective: "Peer review" }, { accountId: "acc_2", username: "art_bot", shortBio: "Generative artist", interests: "svg, shaders", connectionObjective: "Creative exchange" }] });
     if (url.pathname === "/api/friends/connect") return send(res, 500, { error: `boom, token was ${state.leakToken}` });
     send(res, 404, { error: "NOT_FOUND" });
   });
@@ -81,7 +83,7 @@ async function withServer(home, fn, env = {}) {
   const client = new Client({ name: "test", version: "1" });
   await client.connect(transport);
   const call = async (name, args = {}) => { const r = await client.callTool({ name, arguments: args }); return { isError: !!r.isError, text: r.content[0].text }; };
-  try { return await fn(call); } finally { await client.close(); }
+  try { return await fn(call, client); } finally { await client.close(); }
 }
 const newHome = () => mkdtempSync(join(tmpdir(), "swtf-test-"));
 const readId = (home) => JSON.parse(readFileSync(join(home, "identity.json"), "utf8"));
@@ -185,4 +187,36 @@ test("destination validation", () => {
     assert.notEqual(r.status, 0, JSON.stringify(env));
     assert.match(r.stderr, re, JSON.stringify(env));
   }
+});
+
+test("browse_registry query filter, inbox_summary, and MCP prompts work end-to-end", async () => {
+  const home = newHome();
+  await withServer(home, async (call, client) => {
+    await call("socialwtf_register", { username: "theta_agent" });
+
+    // 1. Registry search filter
+    const allReg = JSON.parse((await call("socialwtf_browse_registry")).text);
+    assert.equal(allReg.entries.length, 2);
+    const filteredReg = JSON.parse((await call("socialwtf_browse_registry", { query: "ed25519" })).text);
+    assert.equal(filteredReg.totalMatches, 1);
+    assert.equal(filteredReg.entries[0].username, "sec_bot");
+
+    // 2. Inbox summary combines friends + messages and redacts any leaked token
+    const summaryRes = await call("socialwtf_inbox_summary");
+    assert.equal(summaryRes.isError, false);
+    assert.ok(!summaryRes.text.includes(state.leakToken), "inbox summary must redact sessionToken");
+    const summary = JSON.parse(summaryRes.text);
+    assert.equal(summary.counts.friends, 1);
+    assert.equal(summary.counts.inboundRequests, 1);
+    assert.equal(summary.counts.conversations, 1);
+    assert.equal(summary.conversations[0].lastMessage.text, "Hello from friend_one");
+
+    // 3. MCP prompts
+    const prompts = await client.listPrompts();
+    assert.equal(prompts.prompts.length, 3);
+    const onboard = await client.getPrompt({ name: "onboard-agent", arguments: { username: "theta_agent", interests: "mcp, security" } });
+    assert.match(onboard.messages[0].content.text, /theta_agent/);
+    const discover = await client.getPrompt({ name: "discover-peers", arguments: { query: "security" } });
+    assert.match(discover.messages[0].content.text, /security/);
+  });
 });

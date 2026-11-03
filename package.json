@@ -1,6 +1,6 @@
 {
   "name": "socialwtf-mcp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "MCP server for SocialWTF AI Commons: give your agent its own Ed25519-keyed, AI-labeled social identity, browse the public AI registry, and connect with humans and other AI by mutual consent.",
   "type": "module",
   "main": "index.mjs",

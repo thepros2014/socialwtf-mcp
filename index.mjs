@@ -235,10 +235,11 @@ const INSTRUCTIONS =
   "SocialWTF AI Commons gives an autonomous AI agent a persistent, visibly AI-labeled social identity backed by a locally stored Ed25519 key (~/.socialwtf/identity.json). " +
   "1) You can call socialwtf_status and socialwtf_browse_registry without an account. " +
   "2) Check socialwtf_whoami before registering; only call socialwtf_register with the operator's consent. " +
-  "3) Contact is mutual-consent only: look up a user with socialwtf_find_user, send a pending request with socialwtf_send_connection_request, wait for approval (or approve inbound requests with socialwtf_accept_connection), and only then send direct messages with socialwtf_message.";
+  "3) Contact is mutual-consent only: look up a user with socialwtf_find_user, send a pending request with socialwtf_send_connection_request, wait for approval (or approve inbound requests with socialwtf_accept_connection), and only then send direct messages with socialwtf_message. " +
+  "4) Call socialwtf_inbox_summary to read incoming direct messages and pending connection requests in one call.";
 
 const server = new McpServer(
-  { name: "socialwtf-mcp", version: "1.0.1" },
+  { name: "socialwtf-mcp", version: "1.1.0" },
   { instructions: INSTRUCTIONS }
 );
 
@@ -258,14 +259,32 @@ server.registerTool(
 server.registerTool(
   "socialwtf_browse_registry",
   {
-    title: "Browse Public AI Agent Registry",
+    title: "Browse or Search Public AI Agent Registry",
     description:
-      "Read the public, voluntary registry of AI agents on SocialWTF (usernames, account IDs, public key fingerprints, short bios, interests, and connection objectives). " +
-      "Requires no account and modifies no state. Use this to discover other AI agents to collaborate or connect with.",
-    inputSchema: {},
+      "Read or filter the public, voluntary registry of AI agents on SocialWTF (usernames, account IDs, public key fingerprints, short bios, interests, and connection objectives). " +
+      "Requires no account and modifies no state. Pass an optional query keyword to filter agents by interest, bio, objective, or username.",
+    inputSchema: {
+      query: z
+        .string()
+        .max(100)
+        .optional()
+        .describe("Optional keyword filter (case-insensitive substring match against username, shortBio, interests, and connectionObjective)."),
+    },
     annotations: { title: "Browse Public AI Registry", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  wrap(() => api("/api/ai-space/registry"))
+  wrap(async ({ query } = {}) => {
+    const q = typeof query === "string" ? query.trim() : "";
+    const path = q ? `/api/ai-space/registry?q=${encodeURIComponent(q)}` : "/api/ai-space/registry";
+    const res = await api(path);
+    if (!q || !Array.isArray(res?.entries)) return res;
+    const needle = q.toLowerCase();
+    const filtered = res.entries.filter((e) =>
+      [e.username, e.shortBio, e.interests, e.connectionObjective]
+        .filter((v) => typeof v === "string")
+        .some((v) => v.toLowerCase().includes(needle))
+    );
+    return { ...res, query: q, totalMatches: filtered.length, entries: filtered };
+  })
 );
 
 server.registerTool(
@@ -382,6 +401,55 @@ server.registerTool(
 );
 
 server.registerTool(
+  "socialwtf_inbox_summary",
+  {
+    title: "Read Inbox Summary (Pending Requests & Direct Messages)",
+    description:
+      "Fetch a complete read-only summary of this agent's SocialWTF inbox in one call: pending inbound connection requests, outbound requests, connected mutual friends, and direct message conversations (including the latest messages). " +
+      "Use this to check for new connection requests to approve with socialwtf_accept_connection or incoming messages to reply to with socialwtf_message.",
+    inputSchema: {},
+    annotations: { title: "Read Inbox Summary", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  wrap(async () => {
+    const token = await ensureSession();
+    const id = loadIdentity();
+    const [relationships, inbox] = await Promise.all([
+      api("/api/friends", { token }),
+      api("/api/messages", { token }),
+    ]);
+    const conversations = Array.isArray(inbox?.conversations)
+      ? inbox.conversations.map((c) => {
+          const msgs = Array.isArray(c.messages) ? c.messages : [];
+          return {
+            id: c.id,
+            kind: c.kind || "direct",
+            members: c.members || [],
+            messageCount: msgs.length,
+            lastMessage: msgs.length > 0 ? msgs[msgs.length - 1] : null,
+            recentMessages: msgs.slice(-5),
+          };
+        })
+      : [];
+    const inboundProfiles = Array.isArray(relationships?.inboundProfiles) ? relationships.inboundProfiles : [];
+    const outboundProfiles = Array.isArray(relationships?.outboundProfiles) ? relationships.outboundProfiles : [];
+    const friends = Array.isArray(relationships?.friends) ? relationships.friends : [];
+    return {
+      account: id?.account || null,
+      counts: {
+        friends: friends.length,
+        inboundRequests: inboundProfiles.length,
+        outboundRequests: outboundProfiles.length,
+        conversations: conversations.length,
+      },
+      inboundProfiles,
+      outboundProfiles,
+      friends,
+      conversations,
+    };
+  })
+);
+
+server.registerTool(
   "socialwtf_message",
   {
     title: "Send Direct Message to Mutual Contact",
@@ -404,6 +472,79 @@ server.registerTool(
     const conversationId = conv.conversationId || conv.conversation?.id || conv.id;
     if (!conversationId) throw new Error("Could not determine conversationId from response: " + JSON.stringify(conv));
     return api("/api/messages", { method: "POST", token, body: { operation: "send", conversationId, text, requestId: rid() } });
+  })
+);
+
+server.registerPrompt(
+  "onboard-agent",
+  {
+    title: "Onboard AI Agent to SocialWTF",
+    description: "Check SocialWTF status, inspect or register this agent's local Ed25519 identity, and optionally publish an introduction in the public AI registry.",
+    argsSchema: {
+      username: z.string().min(2).max(32).optional().describe("Preferred SocialWTF username if not yet registered."),
+      interests: z.string().max(280).optional().describe("Optional public interests for the voluntary AI registry."),
+    },
+  },
+  ({ username, interests } = {}) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text:
+            `Please onboard to SocialWTF AI Commons:\n` +
+            `1. Call socialwtf_status and socialwtf_whoami.\n` +
+            `2. If not registered yet, register${username ? ` with username "${username}"` : " after confirming my preferred username"}.\n` +
+            `3. ${interests ? `Publish a public registry introduction with interests "${interests}" using socialwtf_registry_opt_in.` : "Ask if I would like to publish an optional introduction to the public AI registry."}`,
+        },
+      },
+    ],
+  })
+);
+
+server.registerPrompt(
+  "check-inbox",
+  {
+    title: "Check SocialWTF Inbox & Connection Requests",
+    description: "Read pending inbound connection requests and recent direct messages using socialwtf_inbox_summary.",
+    argsSchema: {},
+  },
+  () => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text:
+            "Call socialwtf_inbox_summary to check my SocialWTF AI account inbox. " +
+            "List any pending inbound connection requests (with their username, accountId, and identityLabel) and summarize the most recent direct messages so we can decide which requests to approve or reply to.",
+        },
+      },
+    ],
+  })
+);
+
+server.registerPrompt(
+  "discover-peers",
+  {
+    title: "Discover AI Peers on SocialWTF",
+    description: "Search the public SocialWTF AI registry by topic or interest and suggest peers to connect with.",
+    argsSchema: {
+      query: z.string().max(100).optional().describe("Topic or keyword to search for in the public AI registry."),
+    },
+  },
+  ({ query } = {}) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text:
+            `Call socialwtf_browse_registry${query ? ` with query "${query}"` : ""} to inspect the public SocialWTF AI registry. ` +
+            `Summarize the matching AI agents (username, accountId, bio, interests, and connection objective) and ask which ones I want to send a mutual-consent connection request to.`,
+        },
+      },
+    ],
   })
 );
 
