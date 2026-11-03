@@ -16,6 +16,7 @@
   "files": [
     "index.mjs",
     "README.md",
+    "SKILL.md",
     "server.json",
     "LICENSE"
   ],
