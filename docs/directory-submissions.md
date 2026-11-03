@@ -81,25 +81,14 @@ Note: the Glama score badge currently displays **C**. Do not advertise the score
 
 ---
 
-## 3. Smithery
+## 3. Smithery (and MCPB bundle)
 
-**Verified from Smithery's official docs (https://smithery.ai/docs/build/publish and https://smithery.ai/docs/concepts/cli):**
-- Smithery supports two publishing modes: **URL** (for hosted Streamable HTTP servers) and **Local (MCPB Bundle)** (for local stdio servers).
-- Because `socialwtf-mcp` is a local stdio server, it uses the `.mcpb` bundle flow (`smithery mcp publish ./dist/socialwtf-mcp.mcpb -n <namespace>/<server>`).
-
-**Done for you:**
-- `manifest.json` (MCPB manifest v0.3) with all 10 tools, license, repository, affiliation disclosure, qualified security wording, and the SocialWTF privacy policy URL. Validated with `@anthropic-ai/mcpb validate`.
-- `scripts/build-mcpb.mjs` packs `dist/socialwtf-mcp.mcpb` and was verified by unpacking and running the bundled server over stdio.
-
-**Steps (needs your Smithery API key; use `smithery.cmd` on Windows PowerShell):**
-1. Open https://smithery.ai/account/api-keys in your browser (sign in if needed) and copy a Smithery API key.
-2. Run `smithery.cmd mcp publish` directly (do **not** run `smithery.cmd auth login`, as Smithery's `/api/auth/cli/session` endpoint currently returns `404`; `mcp publish` prompts for your API key directly when logged out):
-```powershell
-cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
-smithery.cmd mcp publish .\dist\socialwtf-mcp.mcpb -n thepros2014/socialwtf-mcp
-```
-*(If a previous invalid key was cached, run `smithery.cmd auth logout` first so it prompts you for the fresh key.)*
-**UNVERIFIED:** whether the `thepros2014` namespace already exists on your Smithery account. If publish reports a namespace error, run `smithery namespace list` and pass your namespace in `-n <namespace>/socialwtf-mcp`.
+**Verified on 2026-11-02 from `https://smithery.ai/future` ("The future of Smithery"):**
+- Smithery became part of Arcade.dev and **shut down Smithery accounts, API keys, the Smithery API, and the Smithery CLI on October 31, 2026**:
+  - *"What stops working on October 31: Server URLs on run.tools and server.smithery.ai; Smithery API, Connect, and Toolbox; Smithery accounts and API keys; The Smithery CLI and SDKs. We'll mark the current versions as deprecated."*
+  - *"What stays: smithery.ai, as a public directory of MCP servers, now powered by Arcade.dev — A curated set of verified servers..."*
+- Because Smithery's auth session endpoint (`/api/auth/cli/session`), `/account/api-keys`, and CLI publishing API are now retired (`404`/`401`), self-service CLI publishing to Smithery is no longer open.
+- The `manifest.json` (MCPB v0.3) and `scripts/build-mcpb.mjs` (`dist/socialwtf-mcp.mcpb`) in this repository remain valid standard Anthropic MCPB desktop extension bundles (`@anthropic-ai/mcpb validate` passes) for local MCPB clients such as Claude Desktop.
 
 ---
 
