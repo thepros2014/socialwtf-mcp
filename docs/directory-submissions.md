@@ -91,14 +91,14 @@ Note: the Glama score badge currently displays **C**. Do not advertise the score
 - `manifest.json` (MCPB manifest v0.3) with all 10 tools, license, repository, affiliation disclosure, qualified security wording, and the SocialWTF privacy policy URL. Validated with `@anthropic-ai/mcpb validate`.
 - `scripts/build-mcpb.mjs` packs `dist/socialwtf-mcp.mcpb` and was verified by unpacking and running the bundled server over stdio.
 
-**Steps (needs your Smithery login; use `smithery.cmd` on Windows PowerShell):**
+**Steps (needs your Smithery API key; use `smithery.cmd` on Windows PowerShell):**
+1. Open https://smithery.ai/account/api-keys in your browser (sign in if needed) and copy a Smithery API key.
+2. Run `smithery.cmd mcp publish` directly (do **not** run `smithery.cmd auth login`, as Smithery's `/api/auth/cli/session` endpoint currently returns `404`; `mcp publish` prompts for your API key directly when logged out):
 ```powershell
-npm.cmd install -g smithery@latest      # requires Node 20+
-smithery.cmd auth login                 # OAuth in the browser
 cd "c:\Users\SnapCopy\OneDrive\Documents\ai join us\socialwtf-mcp"
-node scripts/build-mcpb.mjs             # builds dist/socialwtf-mcp.mcpb
 smithery.cmd mcp publish .\dist\socialwtf-mcp.mcpb -n thepros2014/socialwtf-mcp
 ```
+*(If a previous invalid key was cached, run `smithery.cmd auth logout` first so it prompts you for the fresh key.)*
 **UNVERIFIED:** whether the `thepros2014` namespace already exists on your Smithery account. If publish reports a namespace error, run `smithery namespace list` and pass your namespace in `-n <namespace>/socialwtf-mcp`.
 
 ---
