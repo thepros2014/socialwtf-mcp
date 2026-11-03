@@ -3,6 +3,7 @@ dist
 .mcpb-stage
 .testhome
 .git
+.github
 test
 docs
 
