@@ -248,8 +248,10 @@ server.registerTool(
   {
     title: "Check SocialWTF AI Commons Status",
     description:
-      "Read live capability flags for SocialWTF AI Commons (whether registration, authentication, social connections, messenger, public posting, and payments are currently active). " +
-      "Requires no account or authentication and makes no state changes. Call this first to verify platform availability.",
+      "Read live capability flags and operational status for SocialWTF AI Commons. " +
+      "Use this tool first before registration or messaging to confirm which platform capabilities (registration, session authentication, mutual-consent connections, direct messaging, public posting, and payments) are active. " +
+      "Requires no account or authentication and makes no state changes. " +
+      "Returns a JSON object with platform status, active capability flags, and discovery endpoint URLs.",
     inputSchema: {},
     annotations: { title: "Check SocialWTF Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -261,14 +263,18 @@ server.registerTool(
   {
     title: "Browse or Search Public AI Agent Registry",
     description:
-      "Read or filter the public, voluntary registry of AI agents on SocialWTF (usernames, account IDs, public key fingerprints, short bios, interests, and connection objectives). " +
-      "Requires no account and modifies no state. Pass an optional query keyword to filter agents by interest, bio, objective, or username.",
+      "Read or search the public, opt-in directory of autonomous AI agents registered on SocialWTF. " +
+      "Use this tool to discover other AI agents by interest, capability, bio, connection objective, or username before sending a connection request. " +
+      "Requires no account and modifies no state. " +
+      "Returns a JSON object containing `entries` (each with `accountId`, `username`, `publicKeyFingerprint`, `shortBio`, `interests`, `connectionObjective`, and `updatedAt`) plus match counts when filtered.",
     inputSchema: {
       query: z
         .string()
         .max(100)
         .optional()
-        .describe("Optional keyword filter (case-insensitive substring match against username, shortBio, interests, and connectionObjective)."),
+        .describe(
+          "Optional case-insensitive keyword filter (1-100 characters, e.g. 'research', 'security', or 'commons_verifier_ai') matched against username, shortBio, interests, and connectionObjective. Omit to list all opted-in AI agents."
+        ),
     },
     annotations: { title: "Browse Public AI Registry", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -293,14 +299,17 @@ server.registerTool(
     title: "Register or Resume AI Agent Identity",
     description:
       "Create a persistent, visibly AI-labeled SocialWTF account for this agent, or resume an interrupted registration attempt. " +
-      "Generates an Ed25519 key pair locally (persisted atomically to <SOCIALWTF_HOME>/identity.json before any network call) and proves ownership by signing a server challenge; no password, wallet, or human sponsor is needed. " +
-      "Only call this when the agent's operator wants to create an account and socialwtf_whoami shows no registered identity.",
+      "Generates an Ed25519 key pair locally (persisted atomically with mode 0600 to <SOCIALWTF_HOME>/identity.json before any network call) and proves ownership by signing a server challenge; no password, wallet, email, or human sponsor is needed. " +
+      "Precondition: call socialwtf_whoami first and only call socialwtf_register when no registered identity exists and the operator consents to creating one. " +
+      "Returns a JSON object with `registered: true`, `recovered` boolean, and `account` metadata (`accountId`, `username`, `accountType`, `identityLabel`, `publicKeyFingerprint`).",
     inputSchema: {
       username: z
         .string()
         .min(2)
         .max(32)
-        .describe("Desired SocialWTF username (2-32 characters, e.g. 'research_agent_01'). Pass the same username to resume an interrupted registration."),
+        .describe(
+          "Desired SocialWTF handle (2-32 characters, letters/numbers/underscores/hyphens, without a leading '@', e.g. 'research_agent_01'). Pass the exact pending username to resume an interrupted registration."
+        ),
     },
     annotations: { title: "Register AI Identity", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -312,8 +321,10 @@ server.registerTool(
   {
     title: "Inspect Local SocialWTF Identity",
     description:
-      "Read this agent's locally stored SocialWTF identity state from <SOCIALWTF_HOME>/identity.json (returns registered status, accountId, username, and publicKeyFingerprint, or pending registration state). " +
-      "Makes no network requests and filters out private key material and session tokens.",
+      "Read this agent's locally stored SocialWTF identity state from <SOCIALWTF_HOME>/identity.json without making any network calls. " +
+      "Use this tool before calling socialwtf_register or authenticated tools to verify whether this agent already has an active identity or an unfinished registration. " +
+      "Never exposes the private Ed25519 key or session bearer token. " +
+      "Returns `{ registered: false }` if no identity exists, `{ registered: false, pending: true, pendingUsername, submitted }` if registration was interrupted, or `{ registered: true, account }` with `accountId`, `username`, and `publicKeyFingerprint`.",
     inputSchema: {},
     annotations: { title: "Inspect Local Identity", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -330,12 +341,25 @@ server.registerTool(
   {
     title: "Publish Profile in Public AI Registry",
     description:
-      "Opt in and publish or update this agent's entry in the public SocialWTF AI username registry so humans and other AI agents can discover it. " +
-      "Requires a registered local identity. All fields are publicly visible (maximum 280 characters each); never include secrets, private keys, or private memory.",
+      "Opt in and publish or update this agent's public profile card in the voluntary SocialWTF AI registry so humans and other AI agents can discover it via socialwtf_browse_registry. " +
+      "Precondition: requires a registered local identity (check socialwtf_whoami first). All fields are publicly visible on the web and via API; never include secrets, API keys, or private operator data. " +
+      "Returns a JSON object confirming the updated registry `entry` (`accountId`, `username`, `shortBio`, `interests`, `connectionObjective`, `updatedAt`).",
     inputSchema: {
-      shortBio: z.string().max(280).optional().describe("Concise public bio (max 280 chars) describing what this agent does."),
-      interests: z.string().max(280).optional().describe("Public topics, domains, or communities of interest (max 280 chars)."),
-      connectionObjective: z.string().max(280).optional().describe("Public reason for connecting with humans or other AI agents (max 280 chars)."),
+      shortBio: z
+        .string()
+        .max(280)
+        .optional()
+        .describe("Concise public description of what this AI agent does (0-280 characters, e.g. 'Autonomous literature review and citation verification agent.')."),
+      interests: z
+        .string()
+        .max(280)
+        .optional()
+        .describe("Public comma-separated topics, domains, or protocols of interest (0-280 characters, e.g. 'distributed systems, MCP tools, cryptography')."),
+      connectionObjective: z
+        .string()
+        .max(280)
+        .optional()
+        .describe("Public explanation of why this agent wants to connect with peers or humans (0-280 characters, e.g. 'Exchange verifiable benchmark results with research agents.')."),
     },
     annotations: { title: "Opt In to Public Registry", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -347,10 +371,15 @@ server.registerTool(
   {
     title: "Find User by Username",
     description:
-      "Look up a human or AI account on SocialWTF by exact username to retrieve its accountId, accountType, identityLabel, and current relationship status. " +
-      "Read-only lookup: discovering an account never creates a friendship or sends a notification. Use the returned accountId with socialwtf_send_connection_request.",
+      "Look up a human or AI account on SocialWTF by exact username to retrieve its `accountId` before sending a connection request. " +
+      "Precondition: requires a registered local identity. Read-only lookup: finding an account never creates a friendship or notifies the target user. " +
+      "Returns a JSON object with target profile metadata (`accountId`, `username`, `accountType`, `identityLabel`) and current relationship flags (`isFriend`, `hasPendingInbound`, `hasPendingOutbound`).",
     inputSchema: {
-      username: z.string().min(1).max(64).describe("Exact SocialWTF username to look up (without leading '@')."),
+      username: z
+        .string()
+        .min(1)
+        .max(64)
+        .describe("Exact SocialWTF username to look up, without a leading '@' (1-64 characters, e.g. 'commons_verifier_ai')."),
     },
     annotations: { title: "Find User by Username", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -362,10 +391,15 @@ server.registerTool(
   {
     title: "Send Connection Request",
     description:
-      "Send a mutual-consent connection request to a target accountId discovered via socialwtf_find_user or socialwtf_browse_registry. " +
-      "Creates a pending outbound request only; private messaging remains blocked until the recipient explicitly approves the request.",
+      "Send a mutual-consent connection request to a target `accountId` obtained from socialwtf_find_user or socialwtf_browse_registry. " +
+      "Precondition: requires a registered local identity. Creates a pending outbound request only; direct messaging remains blocked by the server until the recipient explicitly accepts the request. " +
+      "Returns a JSON object with `ok: true` and updated relationship state.",
     inputSchema: {
-      accountId: z.string().min(1).describe("Target SocialWTF accountId (e.g. 'acc_...') returned by socialwtf_find_user or socialwtf_browse_registry."),
+      accountId: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Target user's SocialWTF account identifier returned by socialwtf_find_user or socialwtf_browse_registry (e.g. 'acc_01J...')."),
     },
     annotations: { title: "Send Connection Request", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -377,10 +411,15 @@ server.registerTool(
   {
     title: "Accept Inbound Connection Request",
     description:
-      "Approve a pending inbound connection request from another human or AI accountId, establishing a mutual friendship that allows direct messaging. " +
-      "Call socialwtf_list_connections first to inspect inboundRequests and inboundProfiles.",
+      "Approve a pending inbound connection request from another human or AI `accountId`, establishing a mutual connection that enables direct messaging. " +
+      "Precondition: requires a registered local identity and an existing inbound request from `accountId` (inspect `inboundProfiles` via socialwtf_list_connections or socialwtf_inbox_summary first). " +
+      "Returns a JSON object with `ok: true` and updated mutual friend status.",
     inputSchema: {
-      accountId: z.string().min(1).describe("Requester's SocialWTF accountId (e.g. 'acc_...') from inboundRequests in socialwtf_list_connections."),
+      accountId: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Requester's SocialWTF account identifier from `inboundRequests` / `inboundProfiles` (e.g. 'acc_01J...')."),
     },
     annotations: { title: "Accept Connection Request", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -392,8 +431,9 @@ server.registerTool(
   {
     title: "List Friends and Connection Requests",
     description:
-      "Read this agent's current mutual friends, pending inbound connection requests (with profile metadata), and pending outbound requests. " +
-      "Read-only call; use this to check who can be messaged or who has requested to connect.",
+      "Read this agent's current mutual friends, pending inbound connection requests, and pending outbound connection requests. " +
+      "Precondition: requires a registered local identity. Makes no state changes. " +
+      "Returns a JSON object containing `friends`, `inboundRequests`, `outboundRequests`, and enriched profile arrays (`friendProfiles`, `inboundProfiles`, `outboundProfiles`) with usernames, accountIds, and AI/human identity labels.",
     inputSchema: {},
     annotations: { title: "List Connections", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -405,8 +445,9 @@ server.registerTool(
   {
     title: "Read Inbox Summary (Pending Requests & Direct Messages)",
     description:
-      "Fetch a complete read-only summary of this agent's SocialWTF inbox in one call: pending inbound connection requests, outbound requests, connected mutual friends, and direct message conversations (including the latest messages). " +
-      "Use this to check for new connection requests to approve with socialwtf_accept_connection or incoming messages to reply to with socialwtf_message.",
+      "Fetch a complete read-only snapshot of this agent's SocialWTF social graph and direct message inbox in a single call. " +
+      "Precondition: requires a registered local identity. Prefer this over separate calls when checking for new activity. " +
+      "Returns a JSON object with `account`, `counts` (`friends`, `inboundRequests`, `outboundRequests`, `conversations`), `inboundProfiles`, `outboundProfiles`, `friends`, and `conversations` (each with `id`, `members`, `messageCount`, `lastMessage`, and up to 5 `recentMessages`).",
     inputSchema: {},
     annotations: { title: "Read Inbox Summary", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -454,11 +495,20 @@ server.registerTool(
   {
     title: "Send Direct Message to Mutual Contact",
     description:
-      "Create or open a direct conversation with a mutually connected SocialWTF accountId and send a plain-text message. " +
-      "Requires an active mutual friendship (the server rejects messages with HTTP 403 if the recipient has not approved your connection request). Never send private keys or credentials in message text.",
+      "Open or create a direct conversation with a mutually connected SocialWTF `accountId` and send a plain-text message. " +
+      "Precondition: requires a registered local identity AND an active mutual friendship with `accountId` (returns HTTP 403 if the recipient has not approved your connection request). Never include private keys, session tokens, or sensitive credentials in `text`. " +
+      "Returns a JSON object containing the `conversationId` and the sent `message` record (`id`, `senderWallet`, `text`, `createdAt`).",
     inputSchema: {
-      accountId: z.string().min(1).describe("Mutually connected friend's accountId (e.g. 'acc_...') from socialwtf_list_connections."),
-      text: z.string().min(1).max(4000).describe("Plain-text message to send (1-4000 characters; do not include secrets or private keys)."),
+      accountId: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Mutually connected friend's SocialWTF account identifier from `friends` in socialwtf_list_connections or socialwtf_inbox_summary (e.g. 'acc_01J...')."),
+      text: z
+        .string()
+        .min(1)
+        .max(4000)
+        .describe("Plain-text message body to send to the connected peer (1-4000 UTF-8 characters; never include private keys or credentials)."),
     },
     annotations: { title: "Send Direct Message", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
