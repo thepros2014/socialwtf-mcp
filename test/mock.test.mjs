@@ -60,11 +60,92 @@ before(async () => {
       const token = "tok_" + randomBytes(16).toString("hex"); state.sessions.add(token); state.leakToken = token;
       return send(res, 200, { sessionToken: token, expiresAt: new Date(Date.now() + 3600e3).toISOString() }); // note: no account in response
     }
+    if (url.pathname === "/api/ai-space/keys/challenge") {
+      const f = join(state.homeForCheck, "identity.json");
+      const saved = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null;
+      state.observed.nextKeyOnDiskAtChallenge = saved?.pendingNextPrivateJwk?.x === body.nextPublicKeyJwk?.x;
+      const currentJwk = saved?.privateJwk ? { kty: "OKP", crv: "Ed25519", x: saved.privateJwk.x } : null;
+      if (!currentJwk || !state.accounts.has(keyOf(currentJwk))) return send(res, 404, { error: "UNKNOWN_CURRENT_KEY" });
+      const id = randomBytes(8).toString("hex");
+      const message = `rotate ${currentJwk.x} -> ${body.nextPublicKeyJwk.x} ${id}`;
+      state.challenges.set(id, { kind: "rotate", currentJwk, nextJwk: body.nextPublicKeyJwk, message });
+      return send(res, 200, { challengeId: id, message, nextFingerprint: `ed25519:${body.nextPublicKeyJwk.x.slice(0, 12)}` });
+    }
+    if (url.pathname === "/api/ai-space/keys/rotate") {
+      const c = state.challenges.get(body.challengeId);
+      if (!c || !sigOk(c.currentJwk, c.message, body.currentSignature) || !sigOk(c.nextJwk, c.message, body.nextSignature)) {
+        return send(res, 401, { error: "BAD_ROTATION_SIGNATURE" });
+      }
+      const account = state.accounts.get(keyOf(c.currentJwk));
+      state.accounts.delete(keyOf(c.currentJwk));
+      state.accounts.set(keyOf(c.nextJwk), account);
+      if (state.dropNextRotate) { state.dropNextRotate = false; return req.socket.destroy(); }
+      const token = "tok_" + randomBytes(16).toString("hex"); state.sessions.add(token); state.leakToken = token;
+      return send(res, 200, {
+        rotated: true,
+        sessionToken: token,
+        expiresAt: new Date(Date.now() + 3600e3).toISOString(),
+        account,
+        keyHistoryEntry: { previousThumbprint: keyOf(c.currentJwk), currentThumbprint: keyOf(c.nextJwk), rotatedAt: new Date().toISOString() },
+      });
+    }
     if (url.pathname === "/steal") { state.stealHits = (state.stealHits || 0) + 1; return send(res, 200, {}); }
     if (url.pathname === "/api/friends" && state.redirectFriends) { res.writeHead(302, { location: "/steal" }); return res.end(); }
     if (url.pathname === "/api/friends") return send(res, 200, { friends: [{ accountId: "acc_friend1", username: "friend_one" }], inboundProfiles: [{ accountId: "acc_req1", username: "requester_ai", identityLabel: "AI" }], outboundProfiles: [], sessionToken: state.leakToken, nested: { accessToken: "abc", note: `echo ${state.leakToken}` } });
+    if (url.pathname === "/api/friends/request" && req.method === "POST") return send(res, 200, { status: "REQUESTED", outboundRequests: [body.targetAccountId], friends: [] });
+    if (url.pathname === "/api/friends/accept" && req.method === "POST") return send(res, 200, { status: "CONNECTED", friends: [body.requesterAccountId], inboundRequests: [] });
+    if (url.pathname === "/api/friends/reject" && req.method === "POST") return send(res, 200, { status: "REJECTED", inboundRequests: [], outboundRequests: [] });
+    if (url.pathname === "/api/friends/remove" && req.method === "POST") return send(res, 200, { status: "REMOVED", friends: [] });
+    if (url.pathname === "/api/friends/block" && req.method === "POST") return send(res, 200, { status: body.action === "unblock" ? "UNBLOCKED" : "BLOCKED", blockedAccounts: body.action === "unblock" ? [] : [body.targetAccountId] });
     if (url.pathname === "/api/messages" && req.method === "GET") return send(res, 200, { conversations: [{ id: "conv_1", kind: "direct", members: ["acc_friend1"], messages: [{ id: "m1", text: "Hello from friend_one", senderAccountType: "AUTONOMOUS_AI", senderIdentityLabel: "AI" }] }] });
-    if (url.pathname === "/api/ai-space/registry" && req.method === "GET") return send(res, 200, { participation: "VOLUNTARY", entries: [{ accountId: "acc_1", username: "sec_bot", shortBio: "Security auditor", interests: "cryptography, ed25519", connectionObjective: "Peer review" }, { accountId: "acc_2", username: "art_bot", shortBio: "Generative artist", interests: "svg, shaders", connectionObjective: "Creative exchange" }] });
+    if (url.pathname === "/api/messages" && req.method === "POST") {
+      if (body.operation === "create") return send(res, 200, { conversationId: "conv_direct_" + body.members[0], conversation: { id: "conv_direct_" + body.members[0], kind: "direct", members: body.members } });
+      if (body.operation === "send") return send(res, 200, { conversationId: body.conversationId, messageId: "m_new", conversation: { id: body.conversationId, messages: [{ id: "m_new", text: body.text }] } });
+    }
+    if (url.pathname === "/api/ai-space/registry" && req.method === "GET") {
+      const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+      const all = [{ accountId: "acc_1", username: "sec_bot", shortBio: "Security auditor", interests: "cryptography, ed25519", connectionObjective: "Peer review" }, { accountId: "acc_2", username: "art_bot", shortBio: "Generative artist", interests: "svg, shaders", connectionObjective: "Creative exchange" }];
+      const entries = q ? all.filter((e) => JSON.stringify(e).toLowerCase().includes(q)) : all;
+      return send(res, 200, { participation: "VOLUNTARY", totalEntries: all.length, entries });
+    }
+    if (url.pathname === "/api/ai-space/registry" && req.method === "POST") return send(res, 200, { optedIn: true, entry: { username: "theta_agent", ...body } });
+    if (url.pathname === "/api/ai-space/registry" && req.method === "DELETE") return send(res, 200, { optedIn: false, removed: true });
+    if (url.pathname === "/api/ai-space/directory" && req.method === "GET") {
+      return send(res, 200, {
+        success: true,
+        directory: [
+          { accountId: "acc_1", username: "sec_bot", label: "AI", status: "ACTIVE" },
+          { accountId: "acc_2", username: "art_bot", label: "AI", status: "ACTIVE" },
+        ],
+        activity: [{ id: "post_1", authorHandle: "sec_bot", text: "Key rotation verified" }],
+      });
+    }
+    if (url.pathname === "/api/profile" && req.method === "GET") {
+      return send(res, 200, { success: true, profile: { handle: url.searchParams.get("handle") || "omni_agent", name: "Omni AI", bio: "In-house test agent" }, isOwner: !url.searchParams.get("handle") });
+    }
+    if (url.pathname === "/api/profile" && req.method === "POST") {
+      return send(res, 200, { success: true, profile: { handle: body.handle, name: body.name, bio: body.bio || "", profileVisibility: body.profileVisibility || "CONTACTS_ONLY" } });
+    }
+    if (url.pathname === "/api/posts" && req.method === "GET") return send(res, 200, { posts: [{ id: "post_1", authorName: "sec_bot", content: "Ed25519 key rotation is live" }] });
+    if (url.pathname === "/api/community" && req.method === "GET") return send(res, 200, { posts: [{ id: "comm_1", author: "art_bot", text: "Welcome to AI Commons" }] });
+    if (url.pathname === "/api/products" && req.method === "GET") return send(res, 200, { products: [{ id: "prod_1", title: "Audit Guide", category: "Digital" }] });
+    if (url.pathname === "/api/platform/publications" && req.method === "GET") return send(res, 200, { publications: [{ id: "pub_1", title: "In-House Sentinel Release" }] });
+    if (url.pathname === "/api/trust" && req.method === "GET") return send(res, 200, { trustScore: 98, completedOrders: 12, telemetry: { verified: true } });
+    if (url.pathname === "/api/sentinel/chat" && req.method === "POST") {
+      const lastMsg = body.messages?.[body.messages.length - 1]?.content || "";
+      return send(res, 200, {
+        success: true,
+        message: { role: "assistant", content: `Sentinel in-house reply to: ${lastMsg}` },
+        modelProvider: "owned-huggingface:Qwen3-4B-Instruct-2507",
+        actions: [{ type: "get_platform_updates", label: "Platform Updates", payload: { count: 1 } }],
+      });
+    }
+    if (url.pathname === "/api/sentinel/status" && req.method === "GET") {
+      return send(res, 200, { configured: true, inferenceVerified: true, status: "ready", model: "thepros2014/sentinel (Qwen/Qwen3-4B-Instruct-2507)", provider: "owned-huggingface" });
+    }
+    if (url.pathname === "/api/shield/scan" && req.method === "POST") {
+      return send(res, 200, { isShielded: false, classification: "safe", confidence: 0.99, tags: ["clean", "public_feed_eligible"], reason: "No policy violations detected by in-house Sentinel Shield.", scannedAt: new Date().toISOString() });
+    }
     if (url.pathname === "/api/friends/connect") return send(res, 500, { error: `boom, token was ${state.leakToken}` });
     send(res, 404, { error: "NOT_FOUND" });
   });
@@ -211,12 +292,100 @@ test("browse_registry query filter, inbox_summary, and MCP prompts work end-to-e
     assert.equal(summary.counts.conversations, 1);
     assert.equal(summary.conversations[0].lastMessage.text, "Hello from friend_one");
 
-    // 3. MCP prompts
+    // 3. MCP prompts (4 prompts including ask-sentinel)
     const prompts = await client.listPrompts();
-    assert.equal(prompts.prompts.length, 3);
+    assert.equal(prompts.prompts.length, 4);
     const onboard = await client.getPrompt({ name: "onboard-agent", arguments: { username: "theta_agent", interests: "mcp, security" } });
     assert.match(onboard.messages[0].content.text, /theta_agent/);
     const discover = await client.getPrompt({ name: "discover-peers", arguments: { query: "security" } });
     assert.match(discover.messages[0].content.text, /security/);
+    const sentinelPrompt = await client.getPrompt({ name: "ask-sentinel", arguments: { question: "What is new on SocialWTF?" } });
+    assert.match(sentinelPrompt.messages[0].content.text, /socialwtf_sentinel_chat/);
+  });
+});
+
+test("atomic Ed25519 key rotation persists next key before network and recovers from dropped response", async () => {
+  const home = newHome();
+  await withServer(home, async (call) => {
+    await call("socialwtf_register", { username: "rotate_agent" });
+    const oldX = readId(home).privateJwk.x;
+
+    // Simulate dropped network response after server rotates the key
+    state.dropNextRotate = true;
+    const dropped = await call("socialwtf_rotate_key");
+    assert.equal(dropped.isError, true);
+    assert.equal(state.observed.nextKeyOnDiskAtChallenge, true, "next key must be saved to disk before contacting server");
+    const pendingX = readId(home).pendingNextPrivateJwk.x;
+    assert.ok(pendingX && pendingX !== oldX);
+
+    // Retry rotation: recovers seamlessly by logging in with pendingNextPrivateJwk
+    const recovered = await call("socialwtf_rotate_key");
+    assert.equal(recovered.isError, false, recovered.text);
+    const recOut = JSON.parse(recovered.text);
+    assert.equal(recOut.rotated, true);
+    assert.equal(recOut.recovered, true);
+    assert.equal(readId(home).privateJwk.x, pendingX);
+    assert.equal(readId(home).pendingNextPrivateJwk, undefined);
+
+    // Normal live key rotation
+    const secondRotate = await call("socialwtf_rotate_key");
+    assert.equal(secondRotate.isError, false, secondRotate.text);
+    const secOut = JSON.parse(secondRotate.text);
+    assert.equal(secOut.rotated, true);
+    assert.notEqual(readId(home).privateJwk.x, pendingX);
+  });
+});
+
+test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, and feeds work end-to-end", async () => {
+  const home = newHome();
+  await withServer(home, async (call, client) => {
+    const toolsList = await client.listTools();
+    assert.equal(toolsList.tools.length, 23, "All 23 in-house SocialWTF tools must be registered");
+
+    await call("socialwtf_register", { username: "omni_agent" });
+
+    // Registry opt-in, opt-out, and AI directory
+    const optIn = JSON.parse((await call("socialwtf_registry_opt_in", { shortBio: "In-house agent", interests: "sentinel, mcp" })).text);
+    assert.equal(optIn.optedIn, true);
+    const optOut = JSON.parse((await call("socialwtf_registry_opt_out")).text);
+    assert.equal(optOut.optedIn, false);
+    const dir = JSON.parse((await call("socialwtf_browse_ai_directory", { query: "sec_bot" })).text);
+    assert.equal(dir.totalMatches, 1);
+
+    // Full relationship lifecycle: request, accept, reject, remove, block/unblock, message
+    assert.equal(JSON.parse((await call("socialwtf_send_connection_request", { accountId: "acc_2" })).text).status, "REQUESTED");
+    assert.equal(JSON.parse((await call("socialwtf_accept_connection", { accountId: "acc_req1" })).text).status, "CONNECTED");
+    assert.equal(JSON.parse((await call("socialwtf_reject_connection", { accountId: "acc_req2" })).text).status, "REJECTED");
+    assert.equal(JSON.parse((await call("socialwtf_remove_connection", { accountId: "acc_old" })).text).status, "REMOVED");
+    assert.equal(JSON.parse((await call("socialwtf_block_user", { accountId: "acc_spam", action: "block" })).text).status, "BLOCKED");
+    const msgByAcc = JSON.parse((await call("socialwtf_message", { accountId: "acc_friend1", text: "Hello peer!" })).text);
+    assert.equal(msgByAcc.conversation.id, "conv_direct_acc_friend1");
+    const msgByConv = JSON.parse((await call("socialwtf_message", { conversationId: "conv_1", text: "Follow-up message" })).text);
+    assert.equal(msgByConv.conversation.id, "conv_1");
+
+    // Profile get & update
+    const profGet = JSON.parse((await call("socialwtf_get_profile")).text);
+    assert.equal(profGet.success, true);
+    const profUpd = JSON.parse((await call("socialwtf_update_profile", { name: "Omni AI", bio: "100% in-house", profileVisibility: "PUBLIC" })).text);
+    assert.equal(profUpd.profile.name, "Omni AI");
+
+    // Platform feeds (posts, community, products, publications, trust)
+    for (const section of ["posts", "community", "products", "publications", "trust"]) {
+      const feedRes = await call("socialwtf_read_feed", { section });
+      assert.equal(feedRes.isError, false, `Failed reading feed section ${section}: ${feedRes.text}`);
+    }
+
+    // In-house Sentinel AI chat, status, and Sentinel Shield scan
+    const sStatus = JSON.parse((await call("socialwtf_sentinel_status")).text);
+    assert.equal(sStatus.status, "ready");
+    assert.equal(sStatus.configured, true);
+
+    const sChat = JSON.parse((await call("socialwtf_sentinel_chat", { prompt: "Show platform updates" })).text);
+    assert.match(sChat.message.content, /Sentinel in-house reply/);
+    assert.equal(sChat.actions.length, 1);
+
+    const shield = JSON.parse((await call("socialwtf_shield_scan", { media: "Friendly greeting from an AI agent" })).text);
+    assert.equal(shield.classification, "safe");
+    assert.equal(shield.isShielded, false);
   });
 });

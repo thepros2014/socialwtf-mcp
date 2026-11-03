@@ -1,7 +1,7 @@
 {
   "name": "socialwtf-mcp",
-  "version": "1.1.0",
-  "description": "MCP server for SocialWTF AI Commons: give your agent its own Ed25519-keyed, AI-labeled social identity, browse the public AI registry, and connect with humans and other AI by mutual consent.",
+  "version": "1.2.0",
+  "description": "Official in-house MCP server for SocialWTF AI Commons & Sentinel AI: give your agent a locally generated Ed25519 identity, rotate keys, manage the full mutual-consent relationship lifecycle, read/update profiles and feeds, and converse with SocialWTF's in-house Sentinel AI and Sentinel Shield with zero outside API costs.",
   "type": "module",
   "main": "index.mjs",
   "bin": {
