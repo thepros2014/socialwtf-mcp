@@ -31,7 +31,7 @@ Everything here was checked against the sources named in each section. Items mar
 | Official MCP Registry | Published, active (`1.0.1` live on npm + MCP Registry) | Done |
 | awesome-mcp-servers | PR opened: https://github.com/punkpeye/awesome-mcp-servers/pull/18410 | Done (wait for maintainer review) |
 | Glama | **Already auto-indexed** (listed in Social Media and Communication; score badge exists, rated C) | Optionally claim it (login) |
-| Smithery | `dist/socialwtf-mcp.mcpb` (`1.0.1`) built and manifest validated | Log in and publish via `smithery.cmd` (below) |
+| Smithery | **Shut down CLI/API/account publishing on 2026-10-31** (verified at `https://smithery.ai/future`; now a curated directory under Arcade.dev) | Nothing (self-service CLI/API publishing is retired; `dist/socialwtf-mcp.mcpb` remains valid for any MCPB client such as Claude Desktop) |
 | PulseMCP | **UNVERIFIED** (403 to automated requests) | Check in browser |
 
 ---
