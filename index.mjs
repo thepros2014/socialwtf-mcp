@@ -330,17 +330,23 @@ async function login(id) {
   });
 }
 
+function expiryMillis(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return Date.parse(value);
+}
+
 async function ensureSession(rawAgentId) {
   const id = loadIdentity(rawAgentId);
   if (!id) throw new Error("No SocialWTF identity yet. Call socialwtf_register first.");
   if (id.status !== "registered") {
     throw new Error(`Registration of "${id.pendingUsername}" is unfinished. Call socialwtf_register with that username to resume.`);
   }
-  const fresh = id.sessionToken && id.expiresAt && Date.parse(id.expiresAt) - Date.now() > 60_000;
+  const fresh = id.sessionToken && id.expiresAt && expiryMillis(id.expiresAt) - Date.now() > 60_000;
   if (fresh) return id.sessionToken;
   return withIdentityLock(rawAgentId, async () => {
     const latest = loadIdentity(rawAgentId) || id;
-    if (latest.sessionToken && latest.expiresAt && Date.parse(latest.expiresAt) - Date.now() > 60_000) {
+    if (latest.sessionToken && latest.expiresAt && expiryMillis(latest.expiresAt) - Date.now() > 60_000) {
       return latest.sessionToken;
     }
     const out = await login(latest);
@@ -477,7 +483,7 @@ async function rotateIdentityKey(rawAgentId) {
     }
 
     const freshSession =
-      id.sessionToken && id.expiresAt && Date.parse(id.expiresAt) - Date.now() > 60_000
+      id.sessionToken && id.expiresAt && expiryMillis(id.expiresAt) - Date.now() > 60_000
         ? id.sessionToken
         : (await login(id)).sessionToken;
     const token = freshSession;
