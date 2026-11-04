@@ -115,7 +115,7 @@ before(async () => {
       const entries = q ? all.filter((e) => JSON.stringify(e).toLowerCase().includes(q)) : all;
       return send(res, 200, { participation: "VOLUNTARY", totalEntries: all.length, entries });
     }
-    if (url.pathname === "/api/ai-space/registry" && req.method === "POST") return send(res, 200, { optedIn: true, entry: { username: "theta_agent", ...body } });
+    if (url.pathname === "/api/ai-space/registry" && req.method === "POST") return send(res, 200, { optedIn: true, entry: { username: "theta_agent", updatedAt: Date.now(), ...body } });
     if (url.pathname === "/api/ai-space/registry" && req.method === "DELETE") return send(res, 200, { optedIn: false, removed: true });
     if (url.pathname === "/api/ai-space/directory" && req.method === "GET") {
       return send(res, 200, {
@@ -158,7 +158,7 @@ before(async () => {
       state.profiles.set(body.handle, merged);
       return send(res, 200, { success: true, profile: merged });
     }
-    if (url.pathname === "/api/posts" && req.method === "GET") return send(res, 200, { posts: [{ id: "post_1", authorName: "sec_bot", content: "Ed25519 key rotation is live" }] });
+    if (url.pathname === "/api/posts" && req.method === "GET") return send(res, 200, { posts: [{ id: "post_1", authorName: "sec_bot", avatar: `data:image/png;base64,${"A".repeat(2_000)}`, content: "Ed25519 key rotation is live" }] });
     if (url.pathname === "/api/community" && req.method === "GET") return send(res, 200, { posts: [{ id: "comm_1", author: "art_bot", text: "Welcome to AI Commons" }] });
     if (url.pathname === "/api/products" && req.method === "GET") return send(res, 200, { products: [{ id: "prod_1", title: "Audit Guide", category: "Digital" }] });
     if (url.pathname === "/api/platform/publications" && req.method === "GET") return send(res, 200, { publications: [{ id: "pub_1", title: "In-House Sentinel Release" }] });
@@ -416,8 +416,11 @@ test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, 
     await call("socialwtf_register", { username: "omni_agent" });
 
     // Registry opt-in, opt-out, and AI directory
-    const optIn = JSON.parse((await call("socialwtf_registry_opt_in", { shortBio: "In-house agent", interests: "sentinel, mcp" })).text);
+    const optInResult = await call("socialwtf_registry_opt_in", { shortBio: "In-house agent", interests: "sentinel, mcp" });
+    assert.equal(optInResult.isError, false, optInResult.text);
+    const optIn = JSON.parse(optInResult.text);
     assert.equal(optIn.optedIn, true);
+    assert.equal(typeof optIn.entry.updatedAt, "number");
     const optOut = JSON.parse((await call("socialwtf_registry_opt_out")).text);
     assert.equal(optOut.optedIn, false);
     const dir = JSON.parse((await call("socialwtf_browse_ai_directory", { query: "sec_bot" })).text);
@@ -444,6 +447,11 @@ test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, 
     for (const section of ["posts", "community", "products", "publications", "trust"]) {
       const feedRes = await call("socialwtf_read_feed", { section });
       assert.equal(feedRes.isError, false, `Failed reading feed section ${section}: ${feedRes.text}`);
+      if (section === "posts") {
+        const posts = JSON.parse(feedRes.text);
+        assert.match(posts.posts[0].avatar, /^data:image\/png;base64,\[embedded data omitted;/);
+        assert.ok(posts.posts[0].avatar.length < 120, "Large inline data URIs must be compacted in MCP output");
+      }
     }
 
     // In-house Sentinel AI chat, status, and Sentinel Shield scan
