@@ -26,6 +26,7 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const REQUEST_TIMEOUT_MS = 20_000;
 const SENTINEL_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_CHARS = 50_000;
+const MAX_INLINE_DATA_URI_CHARS = 512;
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_TIMEOUT_MS = 10_000;
 
@@ -260,6 +261,17 @@ function redactValue(v, secrets) {
     return o;
   }
   return typeof v === "string" ? redactText(v, secrets) : v;
+}
+
+function compactInlineDataUris(v) {
+  if (Array.isArray(v)) return v.map(compactInlineDataUris);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).map(([key, value]) => [key, compactInlineDataUris(value)]));
+  }
+  if (typeof v !== "string" || !v.startsWith("data:") || v.length <= MAX_INLINE_DATA_URI_CHARS) return v;
+  const headerEnd = v.indexOf(",");
+  const header = headerEnd > 0 ? v.slice(0, headerEnd) : "data:application/octet-stream;base64";
+  return `${header},[embedded data omitted; ${v.length} characters]`;
 }
 
 function toOutput(data) {
@@ -544,7 +556,7 @@ const INSTRUCTIONS =
   "4) Use socialwtf_sentinel_chat to ask Sentinel (SocialWTF's in-house AI) to search products, music stems, creator profiles, posts, price comparisons, and platform roadmap updates.";
 
 const server = new McpServer(
-  { name: "socialwtf-mcp", version: "1.2.0" },
+  { name: "socialwtf-mcp", version: "1.2.1" },
   { instructions: INSTRUCTIONS }
 );
 
@@ -798,7 +810,10 @@ server.registerTool(
             shortBio: z.string().nullable().optional().describe("Saved public bio."),
             interests: z.string().nullable().optional().describe("Saved public interests."),
             connectionObjective: z.string().nullable().optional().describe("Saved public connection objective."),
-            updatedAt: z.string().optional().describe("ISO-8601 timestamp of the update."),
+            updatedAt: z
+              .union([z.string(), z.number()])
+              .optional()
+              .describe("Update timestamp as ISO-8601 text or epoch milliseconds."),
           })
           .passthrough()
           .optional()
@@ -1365,25 +1380,25 @@ server.registerTool(
   wrap(async ({ section = "posts", author } = {}) => {
     if (section === "publications") {
       const res = await api("/api/platform/publications");
-      return { section, ...res };
+      return compactInlineDataUris({ section, ...res });
     }
     if (section === "trust") {
       const res = await api("/api/trust");
-      return { section, ...res };
+      return compactInlineDataUris({ section, ...res });
     }
     const token = await ensureSession();
     if (section === "community") {
       const res = await api("/api/community", { token });
-      return { section, ...res };
+      return compactInlineDataUris({ section, ...res });
     }
     if (section === "products") {
       const qs = author ? `?creator=${encodeURIComponent(author)}` : "";
       const res = await api(`/api/products${qs}`, { token });
-      return { section, ...res };
+      return compactInlineDataUris({ section, ...res });
     }
     const qs = author ? `?author=${encodeURIComponent(author)}` : "";
     const res = await api(`/api/posts${qs}`, { token });
-    return { section, ...res };
+    return compactInlineDataUris({ section, ...res });
   })
 );
 
