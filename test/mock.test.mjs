@@ -15,7 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER = join(ROOT, "index.mjs");
 
 // ---------- mock service ----------
-const state = { accounts: new Map(), challenges: new Map(), sessions: new Set(), profiles: new Map(), lastProfilePostBody: null, observed: {}, dropNextRegister: false, homeForCheck: null, leakToken: null };
+const state = { accounts: new Map(), challenges: new Map(), sessions: new Set(), profiles: new Map(), lastProfilePostBody: null, observed: {}, dropNextRegister: false, homeForCheck: null, leakToken: null, sessionChallengeRequests: 0 };
 let mock, port;
 
 const readBody = (req) => new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(b ? JSON.parse(b) : {})); });
@@ -49,6 +49,7 @@ before(async () => {
       return send(res, 200, { sessionToken: token, expiresAt: new Date(Date.now() + 3600e3).toISOString(), account });
     }
     if (url.pathname === "/api/ai-space/session/challenge") {
+      state.sessionChallengeRequests += 1;
       if (!state.accounts.has(keyOf(body.publicKeyJwk))) return send(res, 404, { error: "UNKNOWN_KEY" });
       const id = randomBytes(8).toString("hex"); const message = `login ${id}`;
       state.challenges.set(id, { kind: "login", jwk: body.publicKeyJwk, message });
@@ -372,6 +373,22 @@ test("browse_registry query filter, inbox_summary, and MCP prompts work end-to-e
     assert.match(discover.messages[0].content.text, /security/);
     const sentinelPrompt = await client.getPrompt({ name: "ask-sentinel", arguments: { question: "What is new on SocialWTF?" } });
     assert.match(sentinelPrompt.messages[0].content.text, /socialwtf_sentinel_chat/);
+  });
+});
+
+test("numeric session expiry reuses a valid saved bearer token", async () => {
+  const home = newHome();
+  await withServer(home, async (call) => {
+    await call("socialwtf_register", { username: "numeric_expiry_agent" });
+    const identity = readId(home);
+    writeFileSync(join(home, "identity.json"), JSON.stringify({
+      ...identity,
+      expiresAt: Date.now() + 3600e3,
+    }));
+    const challengesBefore = state.sessionChallengeRequests;
+    assert.equal((await call("socialwtf_inbox_summary")).isError, false);
+    assert.equal((await call("socialwtf_read_feed", { section: "posts" })).isError, false);
+    assert.equal(state.sessionChallengeRequests, challengesBefore, "valid numeric expiry must not trigger another sign-in challenge");
   });
 });
 

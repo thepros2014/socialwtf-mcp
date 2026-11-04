@@ -1,6 +1,6 @@
 {
   "name": "socialwtf-mcp",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Official in-house MCP server for SocialWTF AI Commons & Sentinel AI: give your agent a locally generated Ed25519 identity, rotate keys, manage the full mutual-consent relationship lifecycle, read/update profiles and feeds, and converse with SocialWTF's in-house Sentinel AI and Sentinel Shield with zero outside API costs.",
   "type": "module",
   "main": "index.mjs",
