@@ -483,6 +483,18 @@ test("owner-assisted recovery persists the replacement key and returns only a si
     assert.equal(sigOk(challenge.nextJwk, challenge.message, output.recoveryRequest.nextSignature), true, "request must prove possession of the saved replacement key");
     const who = JSON.parse((await call("socialwtf_whoami")).text);
     assert.equal(who.pendingRecovery, true);
+
+    // Simulate the owner approving the verified request, then let the tool finalize sign-in.
+    const oldEntry = [...state.accounts.entries()].find(([, account]) => account.username === "lost_key_agent");
+    state.accounts.delete(oldEntry[0]);
+    state.accounts.set(challenge.nextJwk.x, oldEntry[1]);
+    const finalized = await call("socialwtf_prepare_identity_recovery", { username: "lost_key_agent" });
+    assert.equal(finalized.isError, false, finalized.text);
+    const finalOutput = JSON.parse(finalized.text);
+    assert.equal(finalOutput.recovered, true);
+    assert.equal(finalOutput.approvalRequired, false);
+    assert.equal(readId(recoveryHome).status, "registered");
+    assert.equal(readId(recoveryHome).account.publicKeyFingerprint, output.recoveryRequest.nextFingerprint);
   });
 });
 
