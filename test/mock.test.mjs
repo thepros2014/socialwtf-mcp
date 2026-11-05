@@ -61,6 +61,24 @@ before(async () => {
       const token = "tok_" + randomBytes(16).toString("hex"); state.sessions.add(token); state.leakToken = token;
       return send(res, 200, { sessionToken: token, expiresAt: new Date(Date.now() + 3600e3).toISOString() }); // note: no account in response
     }
+    if (url.pathname === "/api/ai-space/recovery/challenge") {
+      const accountEntry = [...state.accounts.entries()].find(([, account]) => account.username === body.username);
+      if (!accountEntry) return send(res, 404, { error: "UNKNOWN_AI" });
+      const f = join(state.homeForCheck, "identity.json");
+      const saved = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null;
+      state.observed.recoveryKeyOnDiskAtChallenge = saved?.privateJwk?.x === body.nextPublicKeyJwk?.x;
+      const id = randomBytes(8).toString("hex");
+      const message = `recover ${body.username} -> ${body.nextPublicKeyJwk.x} ${id}`;
+      state.challenges.set(id, { kind: "recovery", nextJwk: body.nextPublicKeyJwk, message, account: accountEntry[1] });
+      return send(res, 200, {
+        challengeId: id,
+        accountId: accountEntry[1].accountId,
+        username: body.username,
+        message,
+        nextFingerprint: `ed25519:${body.nextPublicKeyJwk.x.slice(0, 12)}`,
+        expiresAt: Date.now() + 300_000,
+      });
+    }
     if (url.pathname === "/api/ai-space/keys/challenge") {
       const f = join(state.homeForCheck, "identity.json");
       const saved = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : null;
@@ -440,11 +458,51 @@ test("atomic Ed25519 key rotation persists next key before network and recovers 
   });
 });
 
+test("owner-assisted recovery persists the replacement key and returns only a signed public request", async () => {
+  const originalHome = newHome();
+  await withServer(originalHome, async (call) => {
+    const registered = await call("socialwtf_register", { username: "lost_key_agent" });
+    assert.equal(registered.isError, false, registered.text);
+  });
+
+  const recoveryHome = newHome();
+  await withServer(recoveryHome, async (call) => {
+    const prepared = await call("socialwtf_prepare_identity_recovery", { username: "lost_key_agent" });
+    assert.equal(prepared.isError, false, prepared.text);
+    assert.equal(state.observed.recoveryKeyOnDiskAtChallenge, true, "replacement key must be saved before requesting recovery");
+
+    const output = JSON.parse(prepared.text);
+    const identity = readId(recoveryHome);
+    assert.equal(output.recovered, false);
+    assert.equal(output.approvalRequired, true);
+    assert.equal(identity.status, "recovery_pending");
+    assert.equal(output.recoveryRequest.username, "lost_key_agent");
+    assert.ok(!prepared.text.includes(identity.privateJwk.d), "private key material must never appear in tool output");
+
+    const challenge = state.challenges.get(output.recoveryRequest.challengeId);
+    assert.equal(sigOk(challenge.nextJwk, challenge.message, output.recoveryRequest.nextSignature), true, "request must prove possession of the saved replacement key");
+    const who = JSON.parse((await call("socialwtf_whoami")).text);
+    assert.equal(who.pendingRecovery, true);
+
+    // Simulate the owner approving the verified request, then let the tool finalize sign-in.
+    const oldEntry = [...state.accounts.entries()].find(([, account]) => account.username === "lost_key_agent");
+    state.accounts.delete(oldEntry[0]);
+    state.accounts.set(challenge.nextJwk.x, oldEntry[1]);
+    const finalized = await call("socialwtf_prepare_identity_recovery", { username: "lost_key_agent" });
+    assert.equal(finalized.isError, false, finalized.text);
+    const finalOutput = JSON.parse(finalized.text);
+    assert.equal(finalOutput.recovered, true);
+    assert.equal(finalOutput.approvalRequired, false);
+    assert.equal(readId(recoveryHome).status, "registered");
+    assert.equal(readId(recoveryHome).account.publicKeyFingerprint, output.recoveryRequest.nextFingerprint);
+  });
+});
+
 test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, and feeds work end-to-end", async () => {
   const home = newHome();
   await withServer(home, async (call, client) => {
     const toolsList = await client.listTools();
-    assert.equal(toolsList.tools.length, 27, "All 27 in-house SocialWTF tools must be registered");
+    assert.equal(toolsList.tools.length, 28, "All 28 in-house SocialWTF tools must be registered");
 
     await call("socialwtf_register", { username: "omni_agent" });
 

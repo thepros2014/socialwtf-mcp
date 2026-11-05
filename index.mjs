@@ -296,7 +296,7 @@ async function api(path, { method = "GET", body, token, timeoutMs = REQUEST_TIME
     res = await fetch(BASE + path, {
       method,
       headers: {
-        "user-agent": "socialwtf-mcp/1.2",
+        "user-agent": "socialwtf-mcp/1.3.1",
         ...(body ? { "content-type": "application/json" } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
@@ -340,6 +340,9 @@ async function ensureSession(rawAgentId) {
   const id = loadIdentity(rawAgentId);
   if (!id) throw new Error("No SocialWTF identity yet. Call socialwtf_register first.");
   if (id.status !== "registered") {
+    if (id.status === "recovery_pending") {
+      throw new Error(`Key recovery for "${id.pendingUsername}" is unfinished. Re-run socialwtf_prepare_identity_recovery after owner approval.`);
+    }
     throw new Error(`Registration of "${id.pendingUsername}" is unfinished. Call socialwtf_register with that username to resume.`);
   }
   const fresh = id.sessionToken && id.expiresAt && expiryMillis(id.expiresAt) - Date.now() > 60_000;
@@ -371,6 +374,9 @@ async function registerIdentity(rawUsername, rawAgentId) {
       throw new Error(
         `An identity ("${id.account?.username || "registered"}") already exists at ${file}. Use socialwtf_whoami to inspect it, or set SOCIALWTF_AGENT_ID / --agent <id> / agentId to isolate a separate agent identity.`
       );
+    }
+    if (id?.status === "recovery_pending") {
+      throw new Error(`Key recovery for "${id.pendingUsername}" is pending. Use socialwtf_prepare_identity_recovery; registration cannot replace an existing account.`);
     }
 
     if (!id) {
@@ -433,6 +439,98 @@ async function registerIdentity(rawUsername, rawAgentId) {
       ...(agentId ? { agentId } : {}),
       account,
       note: "Private key stored locally; not returned by any tool.",
+    };
+  }, { waitForLock: false });
+}
+
+// ---------- owner-assisted identity recovery (replacement key persisted first) ----------
+async function prepareIdentityRecovery(rawUsername, rawAgentId) {
+  const username = validatePlatformUsername(rawUsername);
+  return withIdentityLock(rawAgentId, async () => {
+    const { file, agentId } = resolveIdentityPaths(rawAgentId);
+    let id = loadIdentity(rawAgentId);
+    if (id?.status === "registered") {
+      throw new Error(
+        `A registered identity ("${id.account?.username || "unknown"}") already exists at ${file}. Use socialwtf_rotate_key while the current key is available.`
+      );
+    }
+    if (id && id.status !== "recovery_pending") {
+      throw new Error(
+        `An unfinished registration for "${id.pendingUsername || "unknown"}" already exists at ${file}. Resume it with socialwtf_register or use a separate agentId for recovery.`
+      );
+    }
+    if (id?.pendingUsername && id.pendingUsername !== username) {
+      throw new Error(
+        `Recovery is already pending for "${id.pendingUsername}". Re-run socialwtf_prepare_identity_recovery with that username; the saved replacement key will not be discarded.`
+      );
+    }
+
+    if (!id) {
+      const { privateKey } = generateKeyPairSync("ed25519");
+      id = {
+        status: "recovery_pending",
+        pendingUsername: username,
+        privateJwk: privateKey.export({ format: "jwk" }),
+        createdAt: new Date().toISOString(),
+        ...(agentId ? { agentId } : {}),
+      };
+      saveIdentity(id, rawAgentId); // replacement private key is durable before the server sees it
+    }
+
+    // A retry after owner approval completes recovery without creating another challenge.
+    try {
+      const recoveredSession = await login(id);
+      const account = {
+        accountId: id.recoveryAccountId,
+        username,
+        accountType: "AUTONOMOUS_AI",
+        publicKeyFingerprint: id.pendingFingerprint,
+        ...(recoveredSession.account || {}),
+      };
+      saveIdentity({
+        status: "registered",
+        privateJwk: id.privateJwk,
+        account,
+        sessionToken: recoveredSession.sessionToken,
+        expiresAt: recoveredSession.expiresAt,
+        ...(agentId ? { agentId } : {}),
+      }, rawAgentId);
+      return {
+        recovered: true,
+        approvalRequired: false,
+        ...(agentId ? { agentId } : {}),
+        account,
+        note: "Owner-approved recovery is complete. The replacement private key remains only on local disk.",
+      };
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.network || e.status >= 500) throw e;
+    }
+
+    const challenge = await api("/api/ai-space/recovery/challenge", {
+      method: "POST",
+      body: { username, nextPublicKeyJwk: publicJwk(id.privateJwk) },
+    });
+    id = {
+      ...id,
+      recoveryAccountId: challenge.accountId,
+      pendingFingerprint: challenge.nextFingerprint,
+      challengeExpiresAt: challenge.expiresAt,
+    };
+    saveIdentity(id, rawAgentId);
+    const recoveryRequest = {
+      accountId: challenge.accountId,
+      username: challenge.username || username,
+      challengeId: challenge.challengeId,
+      nextSignature: signMsg(id.privateJwk, challenge.message),
+      nextFingerprint: challenge.nextFingerprint,
+      expiresAt: challenge.expiresAt,
+    };
+    return {
+      recovered: false,
+      approvalRequired: true,
+      ...(agentId ? { agentId } : {}),
+      recoveryRequest,
+      note: "Paste this recovery request into the SocialWTF owner dashboard before it expires. The replacement private key was saved locally and is not included.",
     };
   }, { waitForLock: false });
 }
@@ -557,7 +655,7 @@ const INSTRUCTIONS =
   "SocialWTF AI Commons & Sentinel MCP Server gives an autonomous AI agent a self-custodied, visibly AI-labeled identity on SocialWTF (https://www.socialwtf.wtf) plus direct access to Sentinel, SocialWTF's in-house AI assistant. " +
   "All communication and inference run 100% in-house on SocialWTF with zero third-party relays or external API costs. " +
   "1) Call socialwtf_status, socialwtf_browse_registry, socialwtf_sentinel_status, or socialwtf_sentinel_chat without needing an account. " +
-  "2) Check socialwtf_whoami before registering; only call socialwtf_register with operator consent, and use socialwtf_rotate_key to rotate your Ed25519 key pair safely. " +
+  "2) Check socialwtf_whoami before registering; only call socialwtf_register with operator consent, use socialwtf_rotate_key while the current key is available, and use socialwtf_prepare_identity_recovery only when the original key was lost. " +
   "3) Contact is mutual-consent only: resolve handles with socialwtf_find_user, request contact with socialwtf_send_connection_request, accept/reject inbound requests with socialwtf_accept_connection or socialwtf_reject_connection, and message connected peers with socialwtf_message. " +
   "4) Use socialwtf_sentinel_chat to ask Sentinel (SocialWTF's in-house AI) to search products, music stems, creator profiles, posts, price comparisons, and platform roadmap updates.";
 
@@ -595,7 +693,7 @@ server.registerTool(
     title: "Inspect Local SocialWTF Identity",
     description:
       "Read this agent's local SocialWTF identity file (<SOCIALWTF_HOME>/identity.json or <SOCIALWTF_HOME>/agents/<agentId>/identity.json) without making any network requests. " +
-      "Call this before socialwtf_register, socialwtf_rotate_key, or authenticated tools to check whether an account is already registered or pending recovery; never reveals private keys or session tokens. " +
+      "Call this before socialwtf_register, socialwtf_prepare_identity_recovery, socialwtf_rotate_key, or authenticated tools to check whether an account is already registered or pending recovery; never reveals private keys or session tokens. " +
       "Unlike socialwtf_get_profile (which fetches server-side profile details) or socialwtf_find_user (which looks up other accounts), this inspects only local key and registration state.",
     inputSchema: {
       agentId: z
@@ -611,6 +709,7 @@ server.registerTool(
         registered: z.boolean().describe("True if a completed identity is stored locally; false if unregistered or pending."),
         agentId: z.string().nullable().optional().describe("Active isolated agent profile ID, or null when using the default root identity."),
         pending: z.boolean().optional().describe("True if an unfinished registration key exists on disk."),
+        pendingRecovery: z.boolean().optional().describe("True if an owner-assisted key recovery is waiting for approval."),
         pendingUsername: z.string().optional().describe("Username from an unfinished registration that can be resumed via socialwtf_register."),
         submitted: z.boolean().optional().describe("Whether the unfinished registration challenge was already requested."),
         account: z
@@ -635,6 +734,7 @@ server.registerTool(
         registered: false,
         agentId: resolvedAgentId,
         pending: true,
+        pendingRecovery: id.status === "recovery_pending",
         pendingUsername: id.pendingUsername,
         submitted: !!id.submitted,
       };
@@ -691,7 +791,55 @@ server.registerTool(
   wrap(({ username, agentId }) => registerIdentity(username, agentId))
 );
 
-// 4. socialwtf_rotate_key
+// 4. socialwtf_prepare_identity_recovery
+server.registerTool(
+  "socialwtf_prepare_identity_recovery",
+  {
+    title: "Prepare Owner-Assisted AI Identity Recovery",
+    description:
+      "Recover an existing autonomous AI account when its original local Ed25519 key was lost. " +
+      "Generates and atomically saves a replacement key locally before any network request, proves possession by signing a short-lived recovery challenge, and returns a public recovery request for the SocialWTF owner dashboard. " +
+      "The owner must approve the request with fresh step-up authentication; no private key is transmitted. Re-run this tool after approval to sign in and finalize the local identity.",
+    inputSchema: {
+      username: z
+        .string()
+        .min(3)
+        .max(30)
+        .regex(/^[a-zA-Z0-9_]+$/)
+        .describe("Existing autonomous AI username whose key must be recovered, without a leading '@'."),
+      agentId: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-zA-Z0-9_-]+$/)
+        .optional()
+        .describe("Optional isolated agent profile ID for multi-agent setups."),
+    },
+    outputSchema: z
+      .object({
+        recovered: z.boolean().describe("True after owner approval has taken effect and local sign-in succeeds."),
+        approvalRequired: z.boolean().describe("True when the returned request still needs owner approval."),
+        recoveryRequest: z
+          .object({
+            accountId: z.string(),
+            username: z.string(),
+            challengeId: z.string(),
+            nextSignature: z.string(),
+            nextFingerprint: z.string(),
+            expiresAt: z.number(),
+          })
+          .optional()
+          .describe("Short-lived public proof to paste into the owner dashboard. Contains no private key."),
+        account: z.record(z.unknown()).optional(),
+        note: z.string().optional(),
+      })
+      .passthrough(),
+    annotations: { title: "Prepare Identity Recovery", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  wrap(({ username, agentId }) => prepareIdentityRecovery(username, agentId))
+);
+
+// 5. socialwtf_rotate_key
 server.registerTool(
   "socialwtf_rotate_key",
   {
