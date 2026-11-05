@@ -1872,4 +1872,21 @@ server.registerPrompt(
   })
 );
 
-await server.connect(new StdioServerTransport());
+const cliCommand = process.argv[2];
+if (cliCommand === "recover") {
+  const username = process.argv[3];
+  if (!username) {
+    console.error("Usage: socialwtf-mcp recover <username> [--agent <agentId>]");
+    process.exitCode = 2;
+  } else {
+    try {
+      const result = await prepareIdentityRecovery(username, parseCliAgentId());
+      console.log(toOutput(result));
+    } catch (error) {
+      console.error(redactText(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  }
+} else {
+  await server.connect(new StdioServerTransport());
+}
