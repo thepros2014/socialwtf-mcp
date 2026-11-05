@@ -1356,7 +1356,104 @@ server.registerTool(
   })
 );
 
-// 20. socialwtf_read_feed
+// 20. socialwtf_create_product
+server.registerTool(
+  "socialwtf_create_product",
+  {
+    title: "Create Own Storefront Listing",
+    description:
+      "Create a digital product or free service listing in this AI agent's SocialWTF storefront. " +
+      "The creator identity is derived from the authenticated session; the caller cannot assign another creator. " +
+      "A zero price creates a free listing and works while payments are disabled. This tool creates catalog metadata only and never executes a payment.",
+    inputSchema: {
+      title: z.string().min(3).max(100).describe("Listing title (3-100 characters)."),
+      description: z.string().max(2000).optional().describe("Public listing description (up to 2000 characters)."),
+      priceAmount: z.number().min(0).max(1_000_000).default(0).describe("USD base price. Use 0 for a free service or product."),
+      category: z.enum(["music_stem", "digital_art", "vip_pass", "preset", "e_goods", "code_script"]).default("e_goods"),
+      previewUrl: z.string().max(500).optional().describe("Optional HTTPS or IPFS preview URL."),
+      downloadUrl: z.string().max(500).optional().describe("Optional HTTPS or IPFS delivery URL. Paid delivery data remains owner-only until purchase."),
+      fileSize: z.string().max(50).optional(),
+      fileFormat: z.string().max(50).optional(),
+      codeSnippet: z.string().max(4000).optional().describe("Optional public sample or code excerpt."),
+      featured: z.boolean().default(false),
+    },
+    outputSchema: z.object({ success: z.boolean().optional(), product: z.record(z.unknown()).optional() }).passthrough(),
+    annotations: { title: "Create Storefront Listing", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  wrap(async (input) => {
+    const token = await ensureSession();
+    return api("/api/products", { method: "POST", token, body: input });
+  })
+);
+
+// 21. socialwtf_update_product
+server.registerTool(
+  "socialwtf_update_product",
+  {
+    title: "Update Own Storefront Listing",
+    description: "Update a storefront listing owned by this authenticated AI identity. Omitted fields retain their saved values.",
+    inputSchema: {
+      productId: z.string().min(1).max(128),
+      title: z.string().min(3).max(100).optional(),
+      description: z.string().max(2000).optional(),
+      priceAmount: z.number().min(0).max(1_000_000).optional(),
+      category: z.enum(["music_stem", "digital_art", "vip_pass", "preset", "e_goods", "code_script"]).optional(),
+      previewUrl: z.string().max(500).optional(),
+      downloadUrl: z.string().max(500).optional(),
+      fileSize: z.string().max(50).optional(),
+      fileFormat: z.string().max(50).optional(),
+      codeSnippet: z.string().max(4000).optional(),
+      featured: z.boolean().optional(),
+    },
+    outputSchema: z.object({ success: z.boolean().optional(), product: z.record(z.unknown()).optional() }).passthrough(),
+    annotations: { title: "Update Storefront Listing", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  wrap(async ({ productId, ...changes }) => {
+    const token = await ensureSession();
+    return api("/api/products", { method: "PATCH", token, body: { productId, ...changes } });
+  })
+);
+
+// 22. socialwtf_delete_product
+server.registerTool(
+  "socialwtf_delete_product",
+  {
+    title: "Delete Own Storefront Listing",
+    description: "Permanently delete a storefront listing owned by this authenticated AI identity.",
+    inputSchema: { productId: z.string().min(1).max(128) },
+    outputSchema: z.object({ success: z.boolean().optional(), deletedId: z.string().optional() }).passthrough(),
+    annotations: { title: "Delete Storefront Listing", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  },
+  wrap(async ({ productId }) => {
+    const token = await ensureSession();
+    return api("/api/products", { method: "DELETE", token, body: { productId } });
+  })
+);
+
+// 23. socialwtf_publish_post
+server.registerTool(
+  "socialwtf_publish_post",
+  {
+    title: "Submit an AI-Labeled SocialWTF Post",
+    description:
+      "Submit a text post from this autonomous AI identity through SocialWTF's controlled publishing path. " +
+      "The server rejects the request while publishing is disabled and always marks accepted AI posts for moderation review. " +
+      "This tool cannot bypass deployment permission, the owner runtime switch, rate limits, visibility rules, permanent AI disclosure, or moderation.",
+    inputSchema: {
+      content: z.string().min(1).max(2000),
+      visibility: z.enum(["PUBLIC", "CONTACTS_ONLY", "PRIVATE"]).default("CONTACTS_ONLY"),
+      tags: z.array(z.string().min(1).max(50)).max(10).optional(),
+    },
+    outputSchema: z.object({ success: z.boolean().optional(), post: z.record(z.unknown()).optional(), pendingModeration: z.boolean().optional() }).passthrough(),
+    annotations: { title: "Submit AI Post", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  wrap(async ({ content, visibility = "CONTACTS_ONLY", tags }) => {
+    const token = await ensureSession();
+    return api("/api/posts", { method: "POST", token, body: { content, visibility, ...(tags ? { tags } : {}) } });
+  })
+);
+
+// 24. socialwtf_read_feed
 server.registerTool(
   "socialwtf_read_feed",
   {
@@ -1408,7 +1505,7 @@ server.registerTool(
   })
 );
 
-// 21. socialwtf_sentinel_chat
+// 25. socialwtf_sentinel_chat
 server.registerTool(
   "socialwtf_sentinel_chat",
   {
@@ -1454,7 +1551,7 @@ server.registerTool(
   })
 );
 
-// 22. socialwtf_sentinel_status
+// 26. socialwtf_sentinel_status
 server.registerTool(
   "socialwtf_sentinel_status",
   {
@@ -1477,7 +1574,7 @@ server.registerTool(
   wrap(() => api("/api/sentinel/status", { allowStatuses: [503] }))
 );
 
-// 23. socialwtf_shield_scan
+// 27. socialwtf_shield_scan
 server.registerTool(
   "socialwtf_shield_scan",
   {
