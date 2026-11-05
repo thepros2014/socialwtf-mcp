@@ -26,7 +26,7 @@ const sigOk = (jwk, message, sig) => verify(null, Buffer.from(message), createPu
 before(async () => {
   mock = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
-    const body = req.method === "POST" ? await readBody(req) : {};
+    const body = req.method === "GET" || req.method === "HEAD" ? {} : await readBody(req);
     if (url.pathname === "/api/ai-space/status") return send(res, 200, { service: "mock" });
     if (url.pathname === "/redirect-me") { res.writeHead(302, { location: "http://127.0.0.1:1/steal" }); return res.end(); }
     if (url.pathname === "/api/ai-space/challenge") {
@@ -160,8 +160,24 @@ before(async () => {
       return send(res, 200, { success: true, profile: merged });
     }
     if (url.pathname === "/api/posts" && req.method === "GET") return send(res, 200, { posts: [{ id: "post_1", authorName: "sec_bot", avatar: `data:image/png;base64,${"A".repeat(2_000)}`, content: "Ed25519 key rotation is live" }] });
+    if (url.pathname === "/api/posts" && req.method === "POST") {
+      state.observed.postCreateBody = body;
+      return send(res, 201, { success: true, post: { id: "post_new", ...body, aiGenerated: true, aiDisclosure: "AUTONOMOUS_AI", moderationStatus: "PENDING_REVIEW" }, pendingModeration: true });
+    }
     if (url.pathname === "/api/community" && req.method === "GET") return send(res, 200, { posts: [{ id: "comm_1", author: "art_bot", text: "Welcome to AI Commons" }] });
     if (url.pathname === "/api/products" && req.method === "GET") return send(res, 200, { products: [{ id: "prod_1", title: "Audit Guide", category: "Digital" }] });
+    if (url.pathname === "/api/products" && req.method === "POST") {
+      state.observed.productCreateBody = body;
+      return send(res, 201, { success: true, product: { id: "prod_new", creatorWallet: "server-derived", ...body } });
+    }
+    if (url.pathname === "/api/products" && req.method === "PATCH") {
+      state.observed.productUpdateBody = body;
+      return send(res, 200, { success: true, product: { id: body.productId, ...body } });
+    }
+    if (url.pathname === "/api/products" && req.method === "DELETE") {
+      state.observed.productDeleteBody = body;
+      return send(res, 200, { success: true, deletedId: body.productId });
+    }
     if (url.pathname === "/api/platform/publications" && req.method === "GET") return send(res, 200, { publications: [{ id: "pub_1", title: "In-House Sentinel Release" }] });
     if (url.pathname === "/api/trust" && req.method === "GET") return send(res, 200, { trustScore: 98, completedOrders: 12, telemetry: { verified: true } });
     if (url.pathname === "/api/sentinel/chat" && req.method === "POST") {
@@ -428,7 +444,7 @@ test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, 
   const home = newHome();
   await withServer(home, async (call, client) => {
     const toolsList = await client.listTools();
-    assert.equal(toolsList.tools.length, 23, "All 23 in-house SocialWTF tools must be registered");
+    assert.equal(toolsList.tools.length, 27, "All 27 in-house SocialWTF tools must be registered");
 
     await call("socialwtf_register", { username: "omni_agent" });
 
@@ -459,6 +475,26 @@ test("in-house Sentinel AI, Shield, registry lifecycle, relationships, profile, 
     assert.equal(profGet.success, true);
     const profUpd = JSON.parse((await call("socialwtf_update_profile", { name: "Omni AI", bio: "100% in-house", profileVisibility: "PUBLIC" })).text);
     assert.equal(profUpd.profile.name, "Omni AI");
+
+    // Storefront creation, ownership-bound update/delete, and controlled AI publishing
+    const createdProduct = JSON.parse((await call("socialwtf_create_product", {
+      title: "Free Architecture Review",
+      description: "A no-cost AI architecture review.",
+      priceAmount: 0,
+      category: "e_goods",
+    })).text);
+    assert.equal(createdProduct.product.id, "prod_new");
+    assert.equal(state.observed.productCreateBody.priceAmount, 0);
+    assert.equal(state.observed.productCreateBody.creatorWallet, undefined, "creator identity must never be client supplied");
+    const updatedProduct = JSON.parse((await call("socialwtf_update_product", { productId: "prod_new", title: "Updated Architecture Review" })).text);
+    assert.equal(updatedProduct.product.id, "prod_new");
+    assert.equal(state.observed.productUpdateBody.productId, "prod_new");
+    assert.equal(state.observed.productUpdateBody.creatorWallet, undefined);
+    const deletedProduct = JSON.parse((await call("socialwtf_delete_product", { productId: "prod_new" })).text);
+    assert.equal(deletedProduct.deletedId, "prod_new");
+    const published = JSON.parse((await call("socialwtf_publish_post", { content: "Hello from a labeled AI", visibility: "PUBLIC", tags: ["AI"] })).text);
+    assert.equal(published.pendingModeration, true);
+    assert.equal(published.post.aiDisclosure, "AUTONOMOUS_AI");
 
     // Platform feeds (posts, community, products, publications, trust)
     for (const section of ["posts", "community", "products", "publications", "trust"]) {
