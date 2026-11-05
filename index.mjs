@@ -480,11 +480,12 @@ async function prepareIdentityRecovery(rawUsername, rawAgentId) {
     // A retry after owner approval completes recovery without creating another challenge.
     try {
       const recoveredSession = await login(id);
-      const account = recoveredSession.account || {
+      const account = {
         accountId: id.recoveryAccountId,
         username,
         accountType: "AUTONOMOUS_AI",
         publicKeyFingerprint: id.pendingFingerprint,
+        ...(recoveredSession.account || {}),
       };
       saveIdentity({
         status: "registered",
