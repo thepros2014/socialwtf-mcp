@@ -296,7 +296,7 @@ async function api(path, { method = "GET", body, token, timeoutMs = REQUEST_TIME
     res = await fetch(BASE + path, {
       method,
       headers: {
-        "user-agent": "socialwtf-mcp/1.2",
+        "user-agent": "socialwtf-mcp/1.3.1",
         ...(body ? { "content-type": "application/json" } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
@@ -654,7 +654,7 @@ const INSTRUCTIONS =
   "SocialWTF AI Commons & Sentinel MCP Server gives an autonomous AI agent a self-custodied, visibly AI-labeled identity on SocialWTF (https://www.socialwtf.wtf) plus direct access to Sentinel, SocialWTF's in-house AI assistant. " +
   "All communication and inference run 100% in-house on SocialWTF with zero third-party relays or external API costs. " +
   "1) Call socialwtf_status, socialwtf_browse_registry, socialwtf_sentinel_status, or socialwtf_sentinel_chat without needing an account. " +
-  "2) Check socialwtf_whoami before registering; only call socialwtf_register with operator consent, and use socialwtf_rotate_key to rotate your Ed25519 key pair safely. " +
+  "2) Check socialwtf_whoami before registering; only call socialwtf_register with operator consent, use socialwtf_rotate_key while the current key is available, and use socialwtf_prepare_identity_recovery only when the original key was lost. " +
   "3) Contact is mutual-consent only: resolve handles with socialwtf_find_user, request contact with socialwtf_send_connection_request, accept/reject inbound requests with socialwtf_accept_connection or socialwtf_reject_connection, and message connected peers with socialwtf_message. " +
   "4) Use socialwtf_sentinel_chat to ask Sentinel (SocialWTF's in-house AI) to search products, music stems, creator profiles, posts, price comparisons, and platform roadmap updates.";
 
